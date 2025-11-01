@@ -1,16 +1,57 @@
-# Node modules
-node_modules/
+# ==============================
+# 🚫 ARCHIVOS Y CARPETAS A EXCLUIR EN EL DEPLOY
+# ==============================
 
-# Environment variables
+# Dependencias locales (no necesarias en build)
+node_modules
+npm-debug.log
+yarn.lock
+package-lock.json
+
+# Archivos de entorno (nunca deben subirse)
 .env
+.env.*
+*.env
 
-# Logs
-logs/
+# Logs y archivos temporales
+logs
 *.log
+tmp
+temp
 
-# Docker data
-mysql/data/
-docker-compose.override.yml
-
-# Mac system files
+# Archivos del sistema operativo
 .DS_Store
+Thumbs.db
+
+# Datos locales de Docker y MySQL
+docker
+docker/*
+docker/**
+mysql
+mysql/*
+mysql/**
+mysql-data
+mysql-data/**
+docker/mysql-data
+docker/mysql-data/**
+
+# Archivos de configuración locales
+docker-compose.yml
+docker-compose.override.yml
+.vscode
+.idea
+*.iml
+
+# Archivos de prueba o desarrollo
+tests
+__tests__
+coverage
+debug.log
+
+# Archivos de documentación (opcional)
+README.md
+
+# Carpeta de cache o builds locales
+.cache
+dist
+build
