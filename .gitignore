@@ -1,0 +1,16 @@
+# Node modules
+node_modules/
+
+# Environment variables
+.env
+
+# Logs
+logs/
+*.log
+
+# Docker data
+mysql/data/
+docker-compose.override.yml
+
+# Mac system files
+.DS_Store
