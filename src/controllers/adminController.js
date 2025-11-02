@@ -1,36 +1,27 @@
+// /Users/macbookpro/proyectos/dhl-guias-api/src/controllers/adminController.js
+
 const { getAccessLogs } = require('../models/accessLogModel');
 const {
   getWhitelistedIps,
-  addIpToWhitelist,
-  isIpWhitelisted
+  addIpToWhitelist
 } = require('../models/ipWhitelistModel');
 
-// GET /api/admin/logs
+/**
+ * GET /api/admin/logs
+ * Lista los últimos accesos (registros/logins)
+ */
 async function listAccessLogs(req, res) {
   try {
-    const limit = req.query.limit ? parseInt(req.query.limit, 10) : 50;
+    const limit = req.query.limit ? parseInt(req.query.limit, 10) : 100;
     const logs = await getAccessLogs(limit);
-
-    // enriquecemos cada log con si la IP está o no en whitelist
-    const enriched = await Promise.all(
-      logs.map(async (log) => {
-        const whitelisted = log.ip_address
-          ? await isIpWhitelisted(log.ip_address)
-          : false;
-        return {
-          ...log,
-          is_whitelisted: whitelisted
-        };
-      })
-    );
 
     return res.json({
       status: 'ok',
-      count: enriched.length,
-      data: enriched
+      count: logs.length,
+      data: logs
     });
   } catch (error) {
-    console.error('Error listando access_logs:', error);
+    console.error('Error obteniendo logs:', error);
     return res.status(500).json({
       status: 'error',
       message: 'No se pudieron obtener los logs',
@@ -39,7 +30,10 @@ async function listAccessLogs(req, res) {
   }
 }
 
-// GET /api/admin/whitelist
+/**
+ * GET /api/admin/whitelist
+ * Lista las IPs autorizadas
+ */
 async function listWhitelist(req, res) {
   try {
     const ips = await getWhitelistedIps();
@@ -49,7 +43,7 @@ async function listWhitelist(req, res) {
       data: ips
     });
   } catch (error) {
-    console.error('Error listando whitelist:', error);
+    console.error('Error obteniendo whitelist:', error);
     return res.status(500).json({
       status: 'error',
       message: 'No se pudo obtener la whitelist',
@@ -58,7 +52,10 @@ async function listWhitelist(req, res) {
   }
 }
 
-// POST /api/admin/whitelist
+/**
+ * POST /api/admin/whitelist
+ * Body: { ip_address, descripcion }
+ */
 async function addToWhitelist(req, res) {
   try {
     const { ip_address, descripcion } = req.body;
@@ -70,48 +67,48 @@ async function addToWhitelist(req, res) {
       });
     }
 
-    await addIpToWhitelist(ip_address, descripcion || null, 'admin-key');
+    await addIpToWhitelist(ip_address, descripcion || null, 'admin-panel');
 
     return res.status(201).json({
       status: 'ok',
-      message: `IP ${ip_address} agregada a la whitelist.`
+      message: 'IP agregada a la whitelist'
     });
   } catch (error) {
-    console.error('Error agregando a whitelist:', error);
+    console.error('Error agregando IP a whitelist:', error);
     return res.status(500).json({
       status: 'error',
-      message: 'No se pudo agregar a la whitelist',
+      message: 'No se pudo agregar la IP a la whitelist',
       error: error.message
     });
   }
 }
 
-// POST /api/admin/whitelist/from-log/:ip
-async function addToWhitelistFromLog(req, res) {
+/**
+ * POST /api/admin/whitelist/from-log/:ip
+ * Permite autorizar rápido una IP que vimos en los logs
+ */
+async function addFromLog(req, res) {
   try {
     const { ip } = req.params;
 
     if (!ip) {
       return res.status(400).json({
         status: 'error',
-        message: 'Debes enviar la IP en la ruta.'
+        message: 'Debes enviar la IP'
       });
     }
 
-    // opcional: normalizar IPs raras
-    const cleanedIp = ip.trim();
+    await addIpToWhitelist(ip, 'autorizada desde logs', 'admin-panel');
 
-    await addIpToWhitelist(cleanedIp, 'autorizada desde logs', 'admin-key');
-
-    return res.status(201).json({
+    return res.json({
       status: 'ok',
-      message: `IP ${cleanedIp} agregada a la whitelist desde logs.`
+      message: `IP ${ip} agregada a la whitelist`
     });
   } catch (error) {
-    console.error('Error agregando a whitelist desde logs:', error);
+    console.error('Error agregando IP desde logs:', error);
     return res.status(500).json({
       status: 'error',
-      message: 'No se pudo agregar la IP a la whitelist',
+      message: 'No se pudo agregar la IP desde logs',
       error: error.message
     });
   }
@@ -121,5 +118,5 @@ module.exports = {
   listAccessLogs,
   listWhitelist,
   addToWhitelist,
-  addToWhitelistFromLog
+  addFromLog
 };

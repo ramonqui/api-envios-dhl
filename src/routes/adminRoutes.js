@@ -4,12 +4,12 @@ const {
   listAccessLogs,
   listWhitelist,
   addToWhitelist,
-  addToWhitelistFromLog
+  addFromLog
 } = require('../controllers/adminController');
 
 const router = express.Router();
 
-// Todas las rutas requieren la admin key
+// todas estas rutas requieren x-admin-key
 router.use(adminKeyMiddleware);
 
 // GET /api/admin/logs
@@ -22,6 +22,6 @@ router.get('/whitelist', listWhitelist);
 router.post('/whitelist', addToWhitelist);
 
 // POST /api/admin/whitelist/from-log/:ip
-router.post('/whitelist/from-log/:ip', addToWhitelistFromLog);
+router.post('/whitelist/from-log/:ip', addFromLog);
 
 module.exports = router;
