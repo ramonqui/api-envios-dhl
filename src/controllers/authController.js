@@ -6,7 +6,8 @@ const jwt = require('jsonwebtoken');
 const {
   createUser,
   findUserByEmail,
-  findUserByUsername
+  findUserByUsername,
+  findUserByWhatsapp
 } = require('../models/userModel');
 
 const {
@@ -18,40 +19,31 @@ const {
   isIpWhitelisted
 } = require('../models/ipWhitelistModel');
 
-const { getIpInfo } = require('../services/ipService');
+const { getIpInfo, isSuspiciousIp } = require('../services/ipService');
 
-// función auxiliar para obtener la IP real del request
+// obtener IP real
 function getClientIp(req) {
-  // 1) si viene de un proxy (Railway, Nginx, etc.)
   const xfwd = req.headers['x-forwarded-for'];
-  if (xfwd) {
-    // puede venir "ip1, ip2, ip3"
-    return xfwd.split(',')[0].trim();
-  }
-  // 2) si viene de express
-  if (req.ip) {
-    return req.ip;
-  }
-  // 3) si viene de la conexión directa
+  if (xfwd) return xfwd.split(',')[0].trim();
+  if (req.ip) return req.ip;
   return req.connection?.remoteAddress || '0.0.0.0';
 }
 
-// función para generar JWT
 function generateToken(user) {
-  const payload = {
-    id: user.id,
-    email: user.email,
-    rol: user.rol
-  };
-
-  return jwt.sign(payload, process.env.JWT_SECRET, {
-    expiresIn: '8h'
-  });
+  return jwt.sign(
+    {
+      id: user.id,
+      email: user.email,
+      rol: user.rol
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: '8h' }
+  );
 }
 
-// ===========================
-// POST /api/auth/register
-// ===========================
+// ========================
+// REGISTRO
+// ========================
 async function register(req, res) {
   try {
     const {
@@ -59,13 +51,14 @@ async function register(req, res) {
       apellido,
       email,
       username,
+      country_code, // opcional
       whatsapp,
       negocio_url,
       password,
       rol
     } = req.body;
 
-    // 1. Validaciones básicas
+    // 1. Campos obligatorios
     if (!nombre || !apellido || !email || !whatsapp || !password) {
       return res.status(400).json({
         status: 'error',
@@ -73,44 +66,73 @@ async function register(req, res) {
       });
     }
 
-    // 2. ¿ya existe el email?
+    // 2. Validar teléfono EXACTAMENTE 10 dígitos
+    // (sin +52, sin espacios, sin guiones)
+    const phoneRegex = /^[0-9]{10}$/;
+    if (!phoneRegex.test(whatsapp)) {
+      return res.status(400).json({
+        status: 'error',
+        field: 'whatsapp',
+        message: 'El teléfono debe tener exactamente 10 dígitos numéricos (sin +52, sin espacios, sin guiones).'
+      });
+    }
+
+    // 3. Email único
     const existingEmail = await findUserByEmail(email);
     if (existingEmail) {
       return res.status(400).json({
         status: 'error',
+        field: 'email',
         message: 'El correo ya está registrado.'
       });
     }
 
-    // 3. ¿ya existe el username? (solo si viene)
+    // 4. Username único (si lo mandan)
     if (username) {
       const existingUsername = await findUserByUsername(username);
       if (existingUsername) {
         return res.status(400).json({
           status: 'error',
+          field: 'username',
           message: 'El nombre de usuario ya está registrado.'
         });
       }
     }
 
-    // 4. obtener IP del cliente
+    // 5. Teléfono único
+    const existingPhone = await findUserByWhatsapp(whatsapp);
+    if (existingPhone) {
+      return res.status(400).json({
+        status: 'error',
+        field: 'whatsapp',
+        message: 'Este teléfono ya está registrado en otra cuenta.'
+      });
+    }
+
+    // 6. IP del cliente
     const clientIp = getClientIp(req);
 
-    // 5. consultar ipregistry (puede fallar, lo manejamos suave)
+    // 7. ipregistry
     let ipInfo = null;
     try {
       ipInfo = await getIpInfo(clientIp);
     } catch (err) {
-      // no rompemos el registro si ipregistry falla
+      // si ipregistry falla no rompemos, pero seguimos
       ipInfo = null;
     }
 
-    // 6. validar si esta IP ya fue usada por OTRO usuario
-    //    (nuestro modelo de logs tiene un helper para ver si la IP pertenece a otro user)
-    const isWhite = await isIpWhitelisted(clientIp);
+    // 8. Bloquear VPN / Proxy / TOR
+    if (isSuspiciousIp(ipInfo)) {
+      return res.status(403).json({
+        status: 'error',
+        message: 'Acceso denegado: no se permiten conexiones desde VPN, proxy o TOR.',
+        ip: clientIp
+      });
+    }
 
+    // 9. Validar IP repetida (tu regla)
+    const isWhite = await isIpWhitelisted(clientIp);
     if (!isWhite) {
-      // si no está en whitelist, revisamos si la IP ya fue usada por alguien más
       const lastAccessDiffUser = await getLastAccessByIpAndDifferentUser(clientIp, null);
       if (lastAccessDiffUser) {
         return res.status(403).json({
@@ -121,26 +143,30 @@ async function register(req, res) {
       }
     }
 
-    // 7. hashear password
+    // 10. Hashear pass
     const salt = await bcrypt.genSalt(10);
     const password_hash = await bcrypt.hash(password, salt);
 
-    // 8. rol por defecto
+    // 11. Rol
     const finalRol = rol ? rol.toUpperCase() : 'MINORISTA';
 
-    // 9. crear usuario
+    // 12. Country code por defecto
+    const finalCountryCode = country_code || '+52';
+
+    // 13. Crear usuario
     const userId = await createUser({
       nombre,
       apellido,
       email,
       username: username || null,
+      country_code: finalCountryCode,
       whatsapp,
       negocio_url: negocio_url || null,
       password_hash,
       rol: finalRol
     });
 
-    // 10. registrar el acceso en logs
+    // 14. Log
     await addAccessLog({
       user_id: userId,
       ip_address: clientIp,
@@ -149,7 +175,7 @@ async function register(req, res) {
       ip_raw: ipInfo
     });
 
-    // 11. generar token para que pueda usar de inmediato
+    // 15. Token
     const token = generateToken({
       id: userId,
       email,
@@ -166,27 +192,25 @@ async function register(req, res) {
         apellido,
         email,
         username: username || null,
+        country_code: finalCountryCode,
         whatsapp,
         negocio_url: negocio_url || null,
         rol: finalRol
       }
     });
   } catch (error) {
-    // 👇 AQUÍ el cambio que pediste
     console.error('Error en register:', error);
     return res.status(500).json({
       status: 'error',
       message: 'Error interno al registrar usuario.',
-      error: error.message || 'sin mensaje',
-      // en producción puedes comentar la siguiente línea si no quieres mostrar stack
-      stack: process.env.NODE_ENV === 'production' ? undefined : error.stack
+      error: error.message || 'sin mensaje'
     });
   }
 }
 
-// ===========================
-// POST /api/auth/login
-// ===========================
+// ========================
+// LOGIN (también bloquea VPN)
+// ========================
 async function login(req, res) {
   try {
     const { emailOrUsername, password } = req.body;
@@ -198,7 +222,7 @@ async function login(req, res) {
       });
     }
 
-    // buscar usuario por email o por username
+    // buscar por email o username
     let user = await findUserByEmail(emailOrUsername);
     if (!user) {
       user = await findUserByUsername(emailOrUsername);
@@ -211,7 +235,6 @@ async function login(req, res) {
       });
     }
 
-    // comparar contraseña
     const isMatch = await bcrypt.compare(password, user.password_hash);
     if (!isMatch) {
       return res.status(400).json({
@@ -220,10 +243,10 @@ async function login(req, res) {
       });
     }
 
-    // obtener IP
+    // IP
     const clientIp = getClientIp(req);
 
-    // consultar ipregistry (otra vez, no rompemos si falla)
+    // ipregistry
     let ipInfo = null;
     try {
       ipInfo = await getIpInfo(clientIp);
@@ -231,7 +254,16 @@ async function login(req, res) {
       ipInfo = null;
     }
 
-    // validar IP contra otros usuarios
+    // bloquear VPN / proxy / tor en login también
+    if (isSuspiciousIp(ipInfo)) {
+      return res.status(403).json({
+        status: 'error',
+        message: 'Acceso denegado: no se permiten conexiones desde VPN, proxy o TOR.',
+        ip: clientIp
+      });
+    }
+
+    // validar IP vs otros usuarios
     const isWhite = await isIpWhitelisted(clientIp);
     if (!isWhite) {
       const lastAccessDiffUser = await getLastAccessByIpAndDifferentUser(clientIp, user.id);
@@ -244,10 +276,10 @@ async function login(req, res) {
       }
     }
 
-    // generar token
+    // token
     const token = generateToken(user);
 
-    // registrar log
+    // log
     await addAccessLog({
       user_id: user.id,
       ip_address: clientIp,
@@ -266,6 +298,7 @@ async function login(req, res) {
         apellido: user.apellido,
         email: user.email,
         username: user.username,
+        country_code: user.country_code || '+52',
         whatsapp: user.whatsapp,
         negocio_url: user.negocio_url,
         rol: user.rol
@@ -276,8 +309,7 @@ async function login(req, res) {
     return res.status(500).json({
       status: 'error',
       message: 'Error interno al iniciar sesión.',
-      error: error.message || 'sin mensaje',
-      stack: process.env.NODE_ENV === 'production' ? undefined : error.stack
+      error: error.message || 'sin mensaje'
     });
   }
 }
