@@ -1,0 +1,52 @@
+name: API DHL - Health Check
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch: {}
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install jq
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq
+
+      - name: Test /api/health
+        run: |
+          echo "Probando /api/health en ${{ secrets.API_BASE }}"
+          STATUS=$(curl -s "${{ secrets.API_BASE }}/api/health" | jq -r '.status // empty')
+          if [ "$STATUS" != "ok" ]; then
+            echo "❌ /api/health falló"
+            exit 1
+          fi
+          echo "✅ /api/health OK"
+
+      - name: Test /api/db-health
+        run: |
+          echo "Probando /api/db-health"
+          DBSTATUS=$(curl -s "${{ secrets.API_BASE }}/api/db-health" | jq -r '.status // empty')
+          if [ "$DBSTATUS" != "ok" ]; then
+            echo "❌ /api/db-health falló"
+            exit 1
+          fi
+          echo "✅ /api/db-health OK"
+
+      - name: Test /api/admin/whitelist
+        run: |
+          echo "Probando /api/admin/whitelist"
+          RES=$(curl -s "${{ secrets.API_BASE }}/api/admin/whitelist" \
+            -H "x-admin-key: ${{ secrets.ADMIN_KEY }}")
+          STATUS=$(echo "$RES" | jq -r '.status // empty')
+          if [ "$STATUS" != "ok" ]; then
+            echo "❌ /api/admin/whitelist falló"
+            echo "$RES"
+            exit 1
+          fi
+          echo "✅ /api/admin/whitelist OK"
