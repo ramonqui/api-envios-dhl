@@ -1,27 +1,30 @@
+// /Users/macbookpro/proyectos/dhl-guias-api/src/routes/adminRoutes.js
+
 const express = require('express');
 const adminKeyMiddleware = require('../middlewares/adminKeyMiddleware');
+
 const {
   listAccessLogs,
   listWhitelist,
   addToWhitelist,
-  addFromLog
+  addUserIpWhitelist,
+  listUserIpWhitelist
 } = require('../controllers/adminController');
 
 const router = express.Router();
 
-// todas estas rutas requieren x-admin-key
+// todas las rutas de aquí requieren la admin key
 router.use(adminKeyMiddleware);
 
-// GET /api/admin/logs
+// logs
 router.get('/logs', listAccessLogs);
 
-// GET /api/admin/whitelist
+// whitelist global
 router.get('/whitelist', listWhitelist);
-
-// POST /api/admin/whitelist
 router.post('/whitelist', addToWhitelist);
 
-// POST /api/admin/whitelist/from-log/:ip
-router.post('/whitelist/from-log/:ip', addFromLog);
+// whitelist por usuario
+router.post('/whitelist/user', addUserIpWhitelist);
+router.get('/whitelist/user/:userId', listUserIpWhitelist);
 
 module.exports = router;

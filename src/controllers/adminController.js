@@ -2,13 +2,16 @@
 
 const { getAccessLogs } = require('../models/accessLogModel');
 const {
-  getWhitelistedIps,
-  addIpToWhitelist
+  getWhitelist,
+  addIpToWhitelist,
+  isIpWhitelisted,
+  isIpWhitelistedForUser,
+  addIpToUserWhitelist,
+  getUserWhitelist
 } = require('../models/ipWhitelistModel');
 
 /**
  * GET /api/admin/logs
- * Lista los últimos accesos (registros/logins)
  */
 async function listAccessLogs(req, res) {
   try {
@@ -32,11 +35,11 @@ async function listAccessLogs(req, res) {
 
 /**
  * GET /api/admin/whitelist
- * Lista las IPs autorizadas
+ * Lista de IPs globales
  */
 async function listWhitelist(req, res) {
   try {
-    const ips = await getWhitelistedIps();
+    const ips = await getWhitelist();
     return res.json({
       status: 'ok',
       count: ips.length,
@@ -55,6 +58,7 @@ async function listWhitelist(req, res) {
 /**
  * POST /api/admin/whitelist
  * Body: { ip_address, descripcion }
+ * Agrega una IP global (la pueden usar varios usuarios)
  */
 async function addToWhitelist(req, res) {
   try {
@@ -71,7 +75,7 @@ async function addToWhitelist(req, res) {
 
     return res.status(201).json({
       status: 'ok',
-      message: 'IP agregada a la whitelist'
+      message: 'IP agregada a la whitelist global'
     });
   } catch (error) {
     console.error('Error agregando IP a whitelist:', error);
@@ -84,31 +88,58 @@ async function addToWhitelist(req, res) {
 }
 
 /**
- * POST /api/admin/whitelist/from-log/:ip
- * Permite autorizar rápido una IP que vimos en los logs
+ * POST /api/admin/whitelist/user
+ * Body: { user_id, ip_address, descripcion }
+ * Autoriza una IP para UN usuario concreto.
  */
-async function addFromLog(req, res) {
+async function addUserIpWhitelist(req, res) {
   try {
-    const { ip } = req.params;
+    const { user_id, ip_address, descripcion } = req.body;
 
-    if (!ip) {
+    if (!user_id || !ip_address) {
       return res.status(400).json({
         status: 'error',
-        message: 'Debes enviar la IP'
+        message: 'Debes enviar user_id e ip_address'
       });
     }
 
-    await addIpToWhitelist(ip, 'autorizada desde logs', 'admin-panel');
+    await addIpToUserWhitelist(user_id, ip_address, descripcion || null);
+
+    return res.status(201).json({
+      status: 'ok',
+      message: `IP ${ip_address} autorizada para el usuario ${user_id}`
+    });
+  } catch (error) {
+    console.error('Error agregando IP a whitelist de usuario:', error);
+    return res.status(500).json({
+      status: 'error',
+      message: 'No se pudo agregar la IP al usuario',
+      error: error.message
+    });
+  }
+}
+
+/**
+ * GET /api/admin/whitelist/user/:userId
+ * Ver las IPs que tiene autorizado un usuario
+ */
+async function listUserIpWhitelist(req, res) {
+  try {
+    const { userId } = req.params;
+
+    const ips = await getUserWhitelist(userId);
 
     return res.json({
       status: 'ok',
-      message: `IP ${ip} agregada a la whitelist`
+      user_id: userId,
+      count: ips.length,
+      data: ips
     });
   } catch (error) {
-    console.error('Error agregando IP desde logs:', error);
+    console.error('Error obteniendo whitelist del usuario:', error);
     return res.status(500).json({
       status: 'error',
-      message: 'No se pudo agregar la IP desde logs',
+      message: 'No se pudo obtener la whitelist del usuario',
       error: error.message
     });
   }
@@ -118,5 +149,6 @@ module.exports = {
   listAccessLogs,
   listWhitelist,
   addToWhitelist,
-  addFromLog
+  addUserIpWhitelist,
+  listUserIpWhitelist
 };

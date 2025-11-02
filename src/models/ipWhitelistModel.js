@@ -2,7 +2,10 @@
 
 const { pool } = require('../config/db');
 
-// ¿La IP está autorizada?
+/**
+ * WHITELIST GLOBAL
+ * Estas IPs pueden usarlas varios usuarios sin restricción.
+ */
 async function isIpWhitelisted(ipAddress) {
   const [rows] = await pool.execute(
     'SELECT id FROM ip_whitelist WHERE ip_address = ? LIMIT 1',
@@ -11,7 +14,6 @@ async function isIpWhitelisted(ipAddress) {
   return rows.length > 0;
 }
 
-// Agregar IP a whitelist
 async function addIpToWhitelist(ipAddress, descripcion = null, createdBy = 'admin') {
   const [result] = await pool.execute(
     `
@@ -26,7 +28,6 @@ async function addIpToWhitelist(ipAddress, descripcion = null, createdBy = 'admi
   return result.insertId;
 }
 
-// Listar todas las IPs en whitelist
 async function getWhitelist() {
   const [rows] = await pool.query(
     `
@@ -38,14 +39,58 @@ async function getWhitelist() {
   return rows;
 }
 
-// Alias para compatibilidad con el controlador
-async function getWhitelistedIps() {
-  return getWhitelist();
+/**
+ * WHITELIST POR USUARIO
+ * Estas IPs solo las puede usar un usuario concreto.
+ */
+
+async function isIpWhitelistedForUser(userId, ipAddress) {
+  const [rows] = await pool.execute(
+    `
+    SELECT id
+    FROM ip_whitelist_users
+    WHERE user_id = ? AND ip_address = ?
+    LIMIT 1
+    `,
+    [userId, ipAddress]
+  );
+  return rows.length > 0;
+}
+
+async function addIpToUserWhitelist(userId, ipAddress, descripcion = null) {
+  const [result] = await pool.execute(
+    `
+    INSERT INTO ip_whitelist_users (user_id, ip_address, descripcion)
+    VALUES (?, ?, ?)
+    ON DUPLICATE KEY UPDATE
+      descripcion = VALUES(descripcion)
+    `,
+    [userId, ipAddress, descripcion]
+  );
+  return result.insertId;
+}
+
+async function getUserWhitelist(userId) {
+  const [rows] = await pool.execute(
+    `
+    SELECT id, ip_address, descripcion, created_at
+    FROM ip_whitelist_users
+    WHERE user_id = ?
+    ORDER BY id DESC
+    `,
+    [userId]
+  );
+  return rows;
 }
 
 module.exports = {
+  // global
   isIpWhitelisted,
   addIpToWhitelist,
   getWhitelist,
-  getWhitelistedIps   // 👈 este nombre es el que te estaba fallando
+
+  // por usuario
+  isIpWhitelistedForUser,
+  addIpToUserWhitelist,
+  getUserWhitelist
 };
