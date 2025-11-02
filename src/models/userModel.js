@@ -1,12 +1,13 @@
 // /Users/macbookpro/proyectos/dhl-guias-api/src/models/userModel.js
+
 const { pool } = require('../config/db');
 
-// crear usuario
+// Crear usuario
 async function createUser({
   nombre,
   apellido,
   email,
-  username = null,
+  username,
   country_code = '+52',
   whatsapp,
   negocio_url = null,
@@ -50,7 +51,6 @@ async function findUserByUsername(username) {
   return rows[0] || null;
 }
 
-// 👇 NUEVO: buscar por teléfono
 async function findUserByWhatsapp(whatsapp) {
   const [rows] = await pool.execute(
     'SELECT * FROM users WHERE whatsapp = ? LIMIT 1',

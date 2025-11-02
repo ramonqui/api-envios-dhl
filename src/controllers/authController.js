@@ -22,6 +22,8 @@ const {
 
 const { getIpInfo, isSuspiciousIp } = require('../services/ipService');
 
+const { generateBaseUsername } = require('../utils/usernameGenerator');
+
 // obtener IP real
 function getClientIp(req) {
   const xfwd = req.headers['x-forwarded-for'];
@@ -51,7 +53,7 @@ async function register(req, res) {
       nombre,
       apellido,
       email,
-      username,
+      username,        // puede venir o no
       country_code,
       whatsapp,
       negocio_url,
@@ -59,7 +61,7 @@ async function register(req, res) {
       rol
     } = req.body;
 
-    // campos obligatorios
+    // 1. Campos obligatorios
     if (!nombre || !apellido || !email || !whatsapp || !password) {
       return res.status(400).json({
         status: 'error',
@@ -67,7 +69,7 @@ async function register(req, res) {
       });
     }
 
-    // validar teléfono 10 dígitos
+    // 2. Validar teléfono 10 dígitos
     const phoneRegex = /^[0-9]{10}$/;
     if (!phoneRegex.test(whatsapp)) {
       return res.status(400).json({
@@ -77,7 +79,7 @@ async function register(req, res) {
       });
     }
 
-    // email único
+    // 3. Email único
     const existingEmail = await findUserByEmail(email);
     if (existingEmail) {
       return res.status(400).json({
@@ -87,19 +89,7 @@ async function register(req, res) {
       });
     }
 
-    // username único
-    if (username) {
-      const existingUsername = await findUserByUsername(username);
-      if (existingUsername) {
-        return res.status(400).json({
-          status: 'error',
-          field: 'username',
-          message: 'El nombre de usuario ya está registrado.'
-        });
-      }
-    }
-
-    // teléfono único
+    // 4. Teléfono único
     const existingPhone = await findUserByWhatsapp(whatsapp);
     if (existingPhone) {
       return res.status(400).json({
@@ -109,10 +99,10 @@ async function register(req, res) {
       });
     }
 
-    // IP
+    // 5. Obtener IP
     const clientIp = getClientIp(req);
 
-    // ipregistry
+    // 6. Consultar ipregistry
     let ipInfo = null;
     try {
       ipInfo = await getIpInfo(clientIp);
@@ -120,7 +110,7 @@ async function register(req, res) {
       ipInfo = null;
     }
 
-    // bloquear VPN / proxy / TOR
+    // 7. Bloquear VPN / proxy / TOR
     if (isSuspiciousIp(ipInfo)) {
       return res.status(403).json({
         status: 'error',
@@ -129,7 +119,7 @@ async function register(req, res) {
       });
     }
 
-    // validar IP repetida solo si NO está en whitelist global
+    // 8. Validar IP repetida solo si NO está en whitelist global
     const isGlobalWhite = await isIpWhitelisted(clientIp);
     if (!isGlobalWhite) {
       const lastAccessDiffUser = await getLastAccessByIpAndDifferentUser(clientIp, null);
@@ -142,19 +132,53 @@ async function register(req, res) {
       }
     }
 
-    // password
+    // 9. Generar username automático si no lo mandaron
+    let finalUsername = username;
+    if (!finalUsername || finalUsername.trim() === '') {
+      // generamos uno base
+      let candidate = generateBaseUsername(nombre, apellido);
+      let exists = await findUserByUsername(candidate);
+
+      // si existe, intentamos hasta encontrar uno libre (máx 5 intentos para no colgar)
+      let attempts = 0;
+      while (exists && attempts < 5) {
+        const newCandidate = generateBaseUsername(nombre, apellido);
+        candidate = newCandidate;
+        exists = await findUserByUsername(candidate);
+        attempts++;
+      }
+
+      // si después de todo aún existe, forzamos uno con timestamp
+      if (exists) {
+        candidate = `${generateBaseUsername(nombre, apellido)}${Date.now().toString().slice(-3)}`;
+      }
+
+      finalUsername = candidate;
+    } else {
+      // si lo mandaron, validamos que no exista
+      const existingUsername = await findUserByUsername(finalUsername);
+      if (existingUsername) {
+        return res.status(400).json({
+          status: 'error',
+          field: 'username',
+          message: 'El nombre de usuario ya está registrado.'
+        });
+      }
+    }
+
+    // 10. Hashear password
     const salt = await bcrypt.genSalt(10);
     const password_hash = await bcrypt.hash(password, salt);
 
     const finalRol = rol ? rol.toUpperCase() : 'MINORISTA';
     const finalCountryCode = country_code || '+52';
 
-    // crear usuario
+    // 11. Crear usuario
     const userId = await createUser({
       nombre,
       apellido,
       email,
-      username: username || null,
+      username: finalUsername,
       country_code: finalCountryCode,
       whatsapp,
       negocio_url: negocio_url || null,
@@ -162,7 +186,7 @@ async function register(req, res) {
       rol: finalRol
     });
 
-    // log
+    // 12. Log
     await addAccessLog({
       user_id: userId,
       ip_address: clientIp,
@@ -171,7 +195,7 @@ async function register(req, res) {
       ip_raw: ipInfo
     });
 
-    // token
+    // 13. Token
     const token = generateToken({
       id: userId,
       email,
@@ -187,7 +211,7 @@ async function register(req, res) {
         nombre,
         apellido,
         email,
-        username: username || null,
+        username: finalUsername,
         country_code: finalCountryCode,
         whatsapp,
         negocio_url: negocio_url || null,
@@ -206,6 +230,7 @@ async function register(req, res) {
 
 // ========================
 // LOGIN
+// (no lo tocamos, solo lo dejamos igual)
 // ========================
 async function login(req, res) {
   try {
@@ -218,7 +243,6 @@ async function login(req, res) {
       });
     }
 
-    // buscar usuario
     let user = await findUserByEmail(emailOrUsername);
     if (!user) {
       user = await findUserByUsername(emailOrUsername);
@@ -231,7 +255,6 @@ async function login(req, res) {
       });
     }
 
-    // password
     const isMatch = await bcrypt.compare(password, user.password_hash);
     if (!isMatch) {
       return res.status(400).json({
@@ -240,7 +263,6 @@ async function login(req, res) {
       });
     }
 
-    // IP
     const clientIp = getClientIp(req);
 
     // ipregistry
@@ -260,13 +282,10 @@ async function login(req, res) {
       });
     }
 
-    // 🔐 aquí viene la parte nueva:
-    // 1. ¿está en whitelist global?
+    // validar IP
     const isGlobalWhite = await isIpWhitelisted(clientIp);
-    // 2. ¿está en whitelist para ESTE usuario?
     const isUserWhite = await isIpWhitelistedForUser(user.id, clientIp);
 
-    // si no está en ninguna de las dos → aplicar regla de IP ya usada por otro
     if (!isGlobalWhite && !isUserWhite) {
       const lastAccessDiffUser = await getLastAccessByIpAndDifferentUser(clientIp, user.id);
       if (lastAccessDiffUser) {
