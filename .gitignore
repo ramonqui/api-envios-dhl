@@ -55,3 +55,10 @@ README.md
 .cache
 dist
 build
+
+
+# scripts locales
+test_api.sh
+
+# evitar subir workflows mientras el token no tiene scope workflow
+.github/
