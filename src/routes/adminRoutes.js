@@ -1,33 +1,48 @@
 // /Users/macbookpro/proyectos/dhl-guias-api/src/routes/adminRoutes.js
 
 const express = require('express');
-const adminKeyMiddleware = require('../middlewares/adminKeyMiddleware');
-const {
-  listAccessLogs,
-  listWhitelist,
-  addToWhitelist,
-  addUserIpWhitelist,
-  listUserIpWhitelist,
-  sendAdminTestEmail
-} = require('../controllers/adminController');
-
 const router = express.Router();
 
-// Todas las rutas de admin requieren la admin key
+let adminKeyMiddleware;
+try {
+  adminKeyMiddleware = require('../middlewares/adminKeyMiddleware');
+} catch (err) {
+  console.error('[BOOT] No se pudo cargar adminKeyMiddleware (se bloquearán endpoints admin):', err?.message || err);
+  // Middleware "dummy" para que no crashee si falta el archivo
+  adminKeyMiddleware = (req, res) => res.status(503).json({ status: 'error', message: 'Admin no disponible' });
+}
+
+let controllers = {};
+try {
+  controllers = require('../controllers/adminController');
+} catch (err) {
+  console.error('[BOOT] No se pudieron cargar controladores admin:', err?.message || err);
+  // Controladores "dummy" para no crashear el arranque
+  controllers = {
+    listAccessLogs: (req, res) => res.status(503).json({ status: 'error', message: 'Admin no disponible' }),
+    listWhitelist: (req, res) => res.status(503).json({ status: 'error', message: 'Admin no disponible' }),
+    addToWhitelist: (req, res) => res.status(503).json({ status: 'error', message: 'Admin no disponible' }),
+    addUserIpWhitelist: (req, res) => res.status(503).json({ status: 'error', message: 'Admin no disponible' }),
+    listUserIpWhitelist: (req, res) => res.status(503).json({ status: 'error', message: 'Admin no disponible' }),
+    sendAdminTestEmail: (req, res) => res.status(503).json({ status: 'error', message: 'Admin no disponible' })
+  };
+}
+
+// Todas las rutas de admin requieren admin key
 router.use(adminKeyMiddleware);
 
-// Logs de accesos
-router.get('/logs', listAccessLogs);
+// Logs
+router.get('/logs', controllers.listAccessLogs);
 
-// Whitelist global (IP libre para varios)
-router.get('/whitelist', listWhitelist);
-router.post('/whitelist', addToWhitelist);
+// Whitelist global
+router.get('/whitelist', controllers.listWhitelist);
+router.post('/whitelist', controllers.addToWhitelist);
 
-// Whitelist por usuario (IP asociada a un usuario concreto)
-router.post('/whitelist/user', addUserIpWhitelist);
-router.get('/whitelist/user/:userId', listUserIpWhitelist);
+// Whitelist por usuario
+router.post('/whitelist/user', controllers.addUserIpWhitelist);
+router.get('/whitelist/user/:userId', controllers.listUserIpWhitelist);
 
-// Envío de correo de prueba (para validar Brevo)
-router.post('/test-email', sendAdminTestEmail);
+// Test-email (Brevo)
+router.post('/test-email', controllers.sendAdminTestEmail);
 
 module.exports = router;
