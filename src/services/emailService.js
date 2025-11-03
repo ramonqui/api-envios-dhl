@@ -5,16 +5,48 @@ const BREVO_API_KEY = process.env.BREVO_API_KEY;
 const BREVO_SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL;
 const BREVO_SENDER_NAME = process.env.BREVO_SENDER_NAME || 'API DHL';
 
-const api = new Brevo.TransactionalEmailsApi();
+const emailApi = new Brevo.TransactionalEmailsApi();
+const accountApi = new Brevo.AccountApi();
 
 if (BREVO_API_KEY) {
-  api.setApiKey(Brevo.TransactionalEmailsApiApiKeys.apiKey, BREVO_API_KEY);
+  emailApi.setApiKey(Brevo.TransactionalEmailsApiApiKeys.apiKey, BREVO_API_KEY);
+  accountApi.setApiKey(Brevo.AccountApiApiKeys.apiKey, BREVO_API_KEY);
 } else {
   console.warn('[BREVO] Falta BREVO_API_KEY en variables de entorno.');
 }
 
 /**
- * Envía un email genérico usando Brevo con logs detallados
+ * Devuelve estado de configuración (sin exponer la API key)
+ */
+function brevoConfigStatus() {
+  return {
+    hasApiKey: !!BREVO_API_KEY,
+    senderEmailConfigured: !!BREVO_SENDER_EMAIL,
+    senderName: BREVO_SENDER_NAME,
+    // en producción podríamos ocultar más datos si hace falta
+  };
+}
+
+/**
+ * Ping a la API de Brevo (getAccount) para verificar que la API key es válida
+ */
+async function brevoAccountPing() {
+  if (!BREVO_API_KEY) {
+    return { ok: false, reason: 'NO_API_KEY' };
+  }
+  try {
+    const info = await accountApi.getAccount();
+    console.log('[BREVO] getAccount OK:', JSON.stringify(info, null, 2));
+    return { ok: true, account: info };
+  } catch (err) {
+    const body = err?.response?.body || err?.message || String(err);
+    console.error('[BREVO] getAccount ERROR:', body);
+    return { ok: false, error: body };
+  }
+}
+
+/**
+ * Enviar email genérico
  */
 async function sendEmail(toEmail, subject, htmlContent) {
   if (!BREVO_API_KEY) {
@@ -33,7 +65,7 @@ async function sendEmail(toEmail, subject, htmlContent) {
   sendSmtpEmail.htmlContent = htmlContent;
 
   try {
-    const resp = await api.sendTransacEmail(sendSmtpEmail);
+    const resp = await emailApi.sendTransacEmail(sendSmtpEmail);
     console.log('[BREVO] Enviado OK:', JSON.stringify(resp, null, 2));
     return { sent: true, response: resp };
   } catch (err) {
@@ -84,5 +116,7 @@ async function sendTestEmail(toEmail) {
 module.exports = {
   sendEmail,
   sendPasswordResetEmail,
-  sendTestEmail
+  sendTestEmail,
+  brevoAccountPing,
+  brevoConfigStatus
 };

@@ -1,7 +1,7 @@
 {
   "name": "dhl-guias-api",
   "version": "1.0.0",
-  "description": "API REST para generar y gestionar guías prepagadas DHL (usuarios, seguridad IP, recuperación de contraseña con Brevo).",
+  "description": "API REST para guías prepagadas DHL (usuarios, seguridad IP, recuperación con Brevo).",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@getbrevo/brevo": "^2.5.0",
-    "axios": "^1.13.1",
+    "axios": "^1.7.4",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",

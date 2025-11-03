@@ -1,38 +1,20 @@
 // /Users/macbookpro/proyectos/dhl-guias-api/src/controllers/adminController.js
 
-let getAccessLogs;
-let getWhitelist, addIpToWhitelist, isIpWhitelisted, isIpWhitelistedForUser, addIpToUserWhitelist, getUserWhitelist;
+const { getAccessLogs } = require('../models/accessLogModel');
+const {
+  getWhitelist,
+  addIpToWhitelist,
+  addIpToUserWhitelist,
+  getUserWhitelist
+} = require('../models/ipWhitelistModel');
 
-try {
-  ({ getAccessLogs } = require('../models/accessLogModel'));
-} catch (err) {
-  console.error('[BOOT] accessLogModel no disponible:', err?.message || err);
-}
+const { sendTestEmail, brevoAccountPing, brevoConfigStatus } = require('../services/emailService');
 
-try {
-  ({
-    getWhitelist,
-    addIpToWhitelist,
-    isIpWhitelisted,
-    isIpWhitelistedForUser,
-    addIpToUserWhitelist,
-    getUserWhitelist
-  } = require('../models/ipWhitelistModel'));
-} catch (err) {
-  console.error('[BOOT] ipWhitelistModel no disponible:', err?.message || err);
-}
-
-let sendTestEmail;
-try {
-  ({ sendTestEmail } = require('../services/emailService'));
-} catch (err) {
-  console.error('[BOOT] emailService no disponible:', err?.message || err);
-  sendTestEmail = async () => ({ sent: false, reason: 'emailService_unavailable' });
-}
-
+/**
+ * Logs de acceso
+ */
 async function listAccessLogs(req, res) {
   try {
-    if (!getAccessLogs) throw new Error('getAccessLogs no disponible');
     const limit = req.query.limit ? parseInt(req.query.limit, 10) : 100;
     const logs = await getAccessLogs(limit);
     return res.json({ status: 'ok', count: logs.length, data: logs });
@@ -42,9 +24,11 @@ async function listAccessLogs(req, res) {
   }
 }
 
+/**
+ * Whitelist global
+ */
 async function listWhitelist(req, res) {
   try {
-    if (!getWhitelist) throw new Error('getWhitelist no disponible');
     const ips = await getWhitelist();
     return res.json({ status: 'ok', count: ips.length, data: ips });
   } catch (error) {
@@ -55,7 +39,6 @@ async function listWhitelist(req, res) {
 
 async function addToWhitelist(req, res) {
   try {
-    if (!addIpToWhitelist) throw new Error('addIpToWhitelist no disponible');
     const { ip_address, descripcion } = req.body;
     if (!ip_address) return res.status(400).json({ status: 'error', message: 'Debes enviar ip_address' });
     await addIpToWhitelist(ip_address, descripcion || null, 'admin-panel');
@@ -66,9 +49,11 @@ async function addToWhitelist(req, res) {
   }
 }
 
+/**
+ * Whitelist por usuario
+ */
 async function addUserIpWhitelist(req, res) {
   try {
-    if (!addIpToUserWhitelist) throw new Error('addIpToUserWhitelist no disponible');
     const { user_id, ip_address, descripcion } = req.body;
     if (!user_id || !ip_address) return res.status(400).json({ status: 'error', message: 'Debes enviar user_id e ip_address' });
     await addIpToUserWhitelist(user_id, ip_address, descripcion || null);
@@ -81,7 +66,6 @@ async function addUserIpWhitelist(req, res) {
 
 async function listUserIpWhitelist(req, res) {
   try {
-    if (!getUserWhitelist) throw new Error('getUserWhitelist no disponible');
     const { userId } = req.params;
     const ips = await getUserWhitelist(userId);
     return res.json({ status: 'ok', user_id: userId, count: ips.length, data: ips });
@@ -91,6 +75,35 @@ async function listUserIpWhitelist(req, res) {
   }
 }
 
+/**
+ * Brevo - ping de API (getAccount) para comprobar API Key
+ */
+async function brevoPing(req, res) {
+  try {
+    const result = await brevoAccountPing();
+    return res.json({ status: 'ok', data: result });
+  } catch (error) {
+    console.error('[BREVO] ping error:', error);
+    return res.status(500).json({ status: 'error', message: 'Brevo ping falló', error: String(error) });
+  }
+}
+
+/**
+ * Brevo - diagnóstico de configuración (sin exponer API Key completa)
+ */
+async function brevoConfig(req, res) {
+  try {
+    const cfg = brevoConfigStatus();
+    return res.json({ status: 'ok', data: cfg });
+  } catch (error) {
+    console.error('[BREVO] config error:', error);
+    return res.status(500).json({ status: 'error', message: 'Brevo config falló', error: String(error) });
+  }
+}
+
+/**
+ * Envío correo de prueba
+ */
 async function sendAdminTestEmail(req, res) {
   try {
     const { to } = req.body;
@@ -109,5 +122,7 @@ module.exports = {
   addToWhitelist,
   addUserIpWhitelist,
   listUserIpWhitelist,
-  sendAdminTestEmail
+  sendAdminTestEmail,
+  brevoPing,
+  brevoConfig
 };
