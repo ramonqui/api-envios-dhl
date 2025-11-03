@@ -11,11 +11,10 @@ process.on('unhandledRejection', (reason) => {
 
 const app = require('./app');
 
-// Cargar DB sin bloquear el arranque
+// Cargar DB sin bloquear el arranque (solo loguea si falla)
 (async () => {
   try {
     const { pool } = require('./config/db');
-    // Opcional: ping no bloqueante
     pool.getConnection()
       .then(conn => {
         console.log('[DB] Conexión establecida');

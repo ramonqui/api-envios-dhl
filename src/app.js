@@ -6,12 +6,12 @@ const morgan = require('morgan');
 
 const app = express();
 
-// -------- Middlewares base
+// Middlewares base
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 app.use(morgan('dev'));
 
-// -------- Healthcheck (siempre responde, no depende de DB ni de nada)
+// Healthcheck (siempre responde)
 app.get('/api/health', (req, res) => {
   return res.json({
     status: 'ok',
@@ -20,21 +20,11 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// -------- Montaje de rutas con protección para no crashear
-function safeMount(path, loader) {
-  try {
-    const router = loader();
-    app.use(path, router);
-    console.log(`[BOOT] Rutas montadas en ${path}`);
-  } catch (err) {
-    console.error(`[BOOT] Error montando rutas en ${path}:`, err?.stack || err);
-  }
-}
+// Montaje de rutas
+app.use('/api/auth', require('./routes/authRoutes'));
+app.use('/api/admin', require('./routes/adminRoutes'));
 
-safeMount('/api/auth', () => require('./routes/authRoutes'));
-safeMount('/api/admin', () => require('./routes/adminRoutes'));
-
-// -------- Handler de 404
+// 404 final
 app.use((req, res) => {
   res.status(404).json({ status: 'error', message: 'Ruta no encontrada' });
 });
