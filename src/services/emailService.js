@@ -34,11 +34,9 @@ async function sendEmail(toEmail, subject, htmlContent) {
 
   try {
     const resp = await api.sendTransacEmail(sendSmtpEmail);
-    // resp contiene messageId, etc.
     console.log('[BREVO] Enviado OK:', JSON.stringify(resp, null, 2));
     return { sent: true, response: resp };
   } catch (err) {
-    // Log muy explícito para diagnosticar
     const body = err?.response?.body || err?.message || String(err);
     console.error('[BREVO] Error al enviar:', body);
     return { sent: false, error: body };

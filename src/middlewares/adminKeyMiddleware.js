@@ -1,33 +1,15 @@
-const dotenv = require('dotenv');
-dotenv.config();
+// /Users/macbookpro/proyectos/dhl-guias-api/src/middlewares/adminKeyMiddleware.js
 
-function adminKeyMiddleware(req, res, next) {
-  const adminKey = process.env.ADMIN_API_KEY;
-  const clientKey = req.headers['x-admin-key'];
+module.exports = function adminKeyMiddleware(req, res, next) {
+  const headerKey = req.headers['x-admin-key'];
+  const adminKey = process.env.ADMIN_KEY || 'super_admin_key_123';
 
-  if (!adminKey) {
-    return res.status(500).json({
-      status: 'error',
-      message: 'ADMIN_API_KEY no está configurada en el servidor.'
-    });
-  }
-
-  if (!clientKey) {
+  if (!headerKey || headerKey !== adminKey) {
     return res.status(401).json({
       status: 'error',
-      message: 'Falta la cabecera x-admin-key.'
+      message: 'No autorizado. Falta o es inválida la x-admin-key.'
     });
   }
 
-  if (clientKey !== adminKey) {
-    return res.status(403).json({
-      status: 'error',
-      message: 'No tienes permisos para ver estos registros.'
-    });
-  }
-
-  // todo bien
   next();
-}
-
-module.exports = adminKeyMiddleware;
+};

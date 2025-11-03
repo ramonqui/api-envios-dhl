@@ -1,13 +1,13 @@
-const app = require('./app');
-const dotenv = require('dotenv');
-const { testConnection } = require('./config/db');
+// /Users/macbookpro/proyectos/dhl-guias-api/src/server.js
 
-dotenv.config();
+require('dotenv').config();
+const app = require('./app');
+
+// Asegura que el módulo de DB se cargue y valide conexión si aplica
+require('./config/db');
 
 const PORT = process.env.PORT || 4000;
 
-app.listen(PORT, async () => {
-  console.log(`🚀 Servidor DHL guías escuchando en http://localhost:${PORT}`);
-  // probamos la conexión a la BD al iniciar
-  await testConnection();
+app.listen(PORT, () => {
+  console.log(`API DHL-Guías escuchando en puerto ${PORT}`);
 });
