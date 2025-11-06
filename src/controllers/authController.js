@@ -28,7 +28,7 @@ const {
 } = require('../models/passwordResetModel');
 
 const { getIpInfo, isSuspiciousIp } = require('../services/ipService');
-const { sendPasswordResetEmail } = require('../services/emailService');
+const { sendPasswordResetEmail, sendWelcomeEmail } = require('../services/emailService');
 const { generateBaseUsername } = require('../utils/usernameGenerator');
 
 // Obtener IP real del cliente
@@ -170,6 +170,18 @@ async function register(req, res) {
 
     const token = generateToken({ id: userId, email, rol: finalRol });
 
+    // Enviar correo de bienvenida con datos de acceso
+    try {
+      await sendWelcomeEmail(email, {
+        username: finalUsername,
+        email,
+        password
+      });
+    } catch (err) {
+      console.error('Error al enviar correo de bienvenida:', err);
+      // No rompemos el registro si el correo falla
+    }
+
     return res.status(201).json({
       status: 'ok',
       message: 'Usuario registrado correctamente.',
@@ -297,16 +309,6 @@ async function forgotPassword(req, res) {
     await createPasswordResetToken(user.id, token, expiresAt);
 
     // 2) Armamos el link de recuperación
-    // - En desarrollo, usaremos:
-    //     http://localhost:3001/reset-password?token=EL_TOKEN
-    // - Si existe FRONTEND_BASE_URL en el entorno, usamos esa como base.
-    //
-    // Ejemplo:
-    //   FRONTEND_BASE_URL=http://localhost:3001/reset-password
-    //
-    // Resultado:
-    //   resetLink = FRONTEND_BASE_URL + "?token=TOKEN"
-    //
     const base = process.env.FRONTEND_BASE_URL || 'http://localhost:3001/reset-password';
     const resetLink = `${base}?token=${token}`;
 

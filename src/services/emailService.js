@@ -22,8 +22,7 @@ function brevoConfigStatus() {
   return {
     hasApiKey: !!BREVO_API_KEY,
     senderEmailConfigured: !!BREVO_SENDER_EMAIL,
-    senderName: BREVO_SENDER_NAME,
-    // en producción podríamos ocultar más datos si hace falta
+    senderName: BREVO_SENDER_NAME
   };
 }
 
@@ -99,7 +98,7 @@ async function sendPasswordResetEmail(toEmail, resetLink) {
 }
 
 /**
- * Email de prueba
+ * Email de prueba (admin)
  */
 async function sendTestEmail(toEmail) {
   const subject = 'Prueba de correo - DHL Guías API';
@@ -113,10 +112,40 @@ async function sendTestEmail(toEmail) {
   return sendEmail(toEmail, subject, html);
 }
 
+/**
+ * Email de bienvenida / registro con datos de acceso
+ * Asunto: REGISTRO misenvios.mx
+ * Cuerpo: estos son los datos para acceder a su cuenta en app.misenvios.mx
+ */
+async function sendWelcomeEmail(toEmail, { username, email, password }) {
+  const subject = 'REGISTRO misenvios.mx';
+  const html = `
+    <div style="font-family: Arial, sans-serif; line-height:1.5; max-width:600px; margin:auto;">
+      <h2 style="margin-bottom:8px;">Bienvenido a misenvios.mx</h2>
+      <p>Estos son los datos para acceder a su cuenta en <strong>app.misenvios.mx</strong>:</p>
+      <ul style="list-style:none; padding-left:0; margin:16px 0;">
+        <li><strong>Usuario:</strong> ${username}</li>
+        <li><strong>Correo electrónico:</strong> ${email}</li>
+        <li><strong>Contraseña:</strong> ${password}</li>
+      </ul>
+      <p>Te recomendamos guardar esta información en un lugar seguro.</p>
+      <p style="margin-top:24px;">
+        Puedes acceder a tu cuenta desde:<br/>
+        <a href="https://app.misenvios.mx" target="_blank">https://app.misenvios.mx</a>
+      </p>
+      <p style="color:#666; font-size:12px; margin-top:24px;">
+        Si tú no solicitaste este registro, por favor ignora este mensaje.
+      </p>
+    </div>
+  `;
+  return sendEmail(toEmail, subject, html);
+}
+
 module.exports = {
   sendEmail,
   sendPasswordResetEmail,
   sendTestEmail,
+  sendWelcomeEmail,
   brevoAccountPing,
   brevoConfigStatus
 };
