@@ -290,14 +290,27 @@ async function forgotPassword(req, res) {
       return res.json({ status: 'ok', message: 'Si el correo existe, se envió un enlace de recuperación.' });
     }
 
+    // 1) generamos el token
     const token = crypto.randomBytes(32).toString('hex');
-    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hora
 
     await createPasswordResetToken(user.id, token, expiresAt);
 
-    const base = process.env.FRONTEND_BASE_URL || 'https://api-envios-dhl-production.up.railway.app/reset-password';
+    // 2) Armamos el link de recuperación
+    // - En desarrollo, usaremos:
+    //     http://localhost:3001/reset-password?token=EL_TOKEN
+    // - Si existe FRONTEND_BASE_URL en el entorno, usamos esa como base.
+    //
+    // Ejemplo:
+    //   FRONTEND_BASE_URL=http://localhost:3001/reset-password
+    //
+    // Resultado:
+    //   resetLink = FRONTEND_BASE_URL + "?token=TOKEN"
+    //
+    const base = process.env.FRONTEND_BASE_URL || 'http://localhost:3001/reset-password';
     const resetLink = `${base}?token=${token}`;
 
+    // 3) Enviamos el correo
     await sendPasswordResetEmail(user.email, resetLink);
 
     return res.json({ status: 'ok', message: 'Si el correo existe, se envió un enlace de recuperación.' });
