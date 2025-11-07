@@ -39,6 +39,8 @@ function getClientIp(req) {
   return req.connection?.remoteAddress || '0.0.0.0';
 }
 
+// Roles soportados en el sistema:
+// ADMIN, REVENDEDOR, MAYORISTA, MINORISTA, MERCADOLIBRE
 function generateToken(user) {
   return jwt.sign(
     { id: user.id, email: user.email, rol: user.rol },
@@ -143,6 +145,8 @@ async function register(req, res) {
     const salt = await bcrypt.genSalt(10);
     const password_hash = await bcrypt.hash(password, salt);
 
+    // Aquí aceptamos el nuevo rol MERCADOLIBRE
+    // Si no viene 'rol' en el body, queda MINORISTA por defecto.
     const finalRol = rol ? rol.toUpperCase() : 'MINORISTA';
     const finalCountryCode = country_code || '+52';
 
