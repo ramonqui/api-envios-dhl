@@ -1,32 +1,91 @@
 // /Users/macbookpro/proyectos/dhl-guias-api/src/app.js
 
 const express = require('express');
-const cors = require('cors');
 const morgan = require('morgan');
+const cors = require('cors');
+
+// Rutas
+const authRoutes = require('./routes/authRoutes');
+const adminRoutes = require('./routes/adminRoutes');
+const pricingRoutes = require('./routes/pricingRoutes');
 
 const app = express();
 
-// Middlewares base
-app.use(cors());
-app.use(express.json({ limit: '1mb' }));
+/* ==============================
+ * MIDDLEWARES GLOBALES
+ * ============================== */
+
+// Logs de peticiones HTTP
 app.use(morgan('dev'));
 
-// Healthcheck (siempre responde)
-app.get('/api/health', (req, res) => {
-  return res.json({
+// Habilitar CORS (para que el frontend pueda llamar al backend)
+app.use(cors());
+
+// Parsear JSON del body
+app.use(express.json());
+
+// Parsear datos de formularios (por si los usas más adelante)
+app.use(express.urlencoded({ extended: true }));
+
+/* ==============================
+ * RUTAS BÁSICAS / SALUD
+ * ============================== */
+
+// Ruta raíz simple
+app.get('/', (req, res) => {
+  res.json({
     status: 'ok',
-    service: 'dhl-guias-api',
-    time: new Date().toISOString()
+    message: 'API Envios DHL - Backend operativo'
   });
 });
 
-// Montaje de rutas
-app.use('/api/auth', require('./routes/authRoutes'));
-app.use('/api/admin', require('./routes/adminRoutes'));
+// Healthcheck para Railway / monitoreo
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString()
+  });
+});
 
-// 404 final
-app.use((req, res) => {
-  res.status(404).json({ status: 'error', message: 'Ruta no encontrada' });
+/* ==============================
+ * RUTAS DE LA APLICACIÓN
+ * ============================== */
+
+// Autenticación: registro, login, forgot-password, reset-password
+app.use('/api/auth', authRoutes);
+
+// Panel admin: whitelist, IPs, pruebas de correo, etc.
+app.use('/api/admin', adminRoutes);
+
+// NUEVO: módulo de pricing (cotizaciones con DHL + reglas + créditos)
+app.use('/api/pricing', pricingRoutes);
+
+/* ==============================
+ * MANEJO DE 404
+ * ============================== */
+
+app.use((req, res, next) => {
+  res.status(404).json({
+    status: 'error',
+    message: 'Ruta no encontrada'
+  });
+});
+
+/* ==============================
+ * MANEJO DE ERRORES GENERALES
+ * ============================== */
+
+app.use((err, req, res, next) => {
+  console.error('[ERROR GLOBAL]', err);
+
+  res.status(500).json({
+    status: 'error',
+    message: 'Error interno del servidor',
+    error: process.env.NODE_ENV === 'production'
+      ? 'internal_error'
+      : (err.message || 'sin mensaje')
+  });
 });
 
 module.exports = app;
