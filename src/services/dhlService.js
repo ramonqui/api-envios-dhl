@@ -1,83 +1,61 @@
 // /Users/macbookpro/proyectos/dhl-guias-api/src/services/dhlService.js
 
 /**
- * Servicio para consumir el API MyDHL de DHL Express.
- *
- * - Soporta modo TEST y PROD, controlado por la variable DHL_API_MODE.
- * - Usa Basic Auth (usuario/contraseña en variables de entorno).
- * - Envía los parámetros según lo proporcionado por el proyecto.
- *
- * Por ahora este servicio solo se usará para pruebas y devolverá
- * la respuesta cruda de DHL. Más adelante, sobre esta base,
- * implementaremos la lógica de:
- *   - costos base
- *   - zona extendida
- *   - manejo especial
- *   - integración con reglas de precios y créditos
+ * Servicio MyDHL Express API con soporte para:
+ * - Ambiente TEST y PROD con credenciales separadas.
+ * - Selección automática según DHL_API_MODE en .env.
  */
 
 const axios = require('axios');
 
-// Leemos configuración desde variables de entorno
+// --- Variables desde .env ---
 const DHL_API_MODE = (process.env.DHL_API_MODE || 'TEST').toUpperCase(); // TEST o PROD
-const DHL_API_TEST_BASE_URL =
-  process.env.DHL_API_TEST_BASE_URL || 'https://express.api.dhl.com/mydhlapi/test';
-const DHL_API_PROD_BASE_URL =
-  process.env.DHL_API_PROD_BASE_URL || 'https://express.api.dhl.com/mydhlapi';
 
-const DHL_API_USERNAME = process.env.DHL_API_USERNAME;
-const DHL_API_PASSWORD = process.env.DHL_API_PASSWORD;
-const DHL_API_ACCOUNT_NUMBER = process.env.DHL_API_ACCOUNT_NUMBER || '984196483';
+// URLs
+const DHL_API_TEST_BASE_URL = process.env.DHL_API_TEST_BASE_URL || 'https://express.api.dhl.com/mydhlapi/test';
+const DHL_API_PROD_BASE_URL = process.env.DHL_API_PROD_BASE_URL || 'https://express.api.dhl.com/mydhlapi';
+
+// Credenciales TEST
+const DHL_API_TEST_USERNAME = process.env.DHL_API_TEST_USERNAME;
+const DHL_API_TEST_PASSWORD = process.env.DHL_API_TEST_PASSWORD;
+const DHL_API_TEST_ACCOUNT_NUMBER = process.env.DHL_API_TEST_ACCOUNT_NUMBER;
+
+// Credenciales PROD
+const DHL_API_PROD_USERNAME = process.env.DHL_API_PROD_USERNAME;
+const DHL_API_PROD_PASSWORD = process.env.DHL_API_PROD_PASSWORD;
+const DHL_API_PROD_ACCOUNT_NUMBER = process.env.DHL_API_PROD_ACCOUNT_NUMBER;
+
 const DHL_API_VERSION = process.env.DHL_API_VERSION || '3.1.0';
 
-// País fijo MX
+// Valores fijos
 const DHL_ORIGIN_COUNTRY_CODE = 'MX';
 const DHL_DESTINATION_COUNTRY_CODE = 'MX';
-
-// Unidad fija métrica
 const DHL_UNIT_OF_MEASUREMENT = 'metric';
 
 /**
- * Obtiene la URL base según el modo (TEST o PROD).
+ * Devuelve la configuración correcta según el modo (TEST o PROD)
  */
-function getBaseUrl() {
+function getEnvConfig() {
   if (DHL_API_MODE === 'PROD') {
-    return DHL_API_PROD_BASE_URL;
+    return {
+      baseUrl: DHL_API_PROD_BASE_URL,
+      username: DHL_API_PROD_USERNAME,
+      password: DHL_API_PROD_PASSWORD,
+      accountNumber: DHL_API_PROD_ACCOUNT_NUMBER
+    };
   }
-  return DHL_API_TEST_BASE_URL;
+  return {
+    baseUrl: DHL_API_TEST_BASE_URL,
+    username: DHL_API_TEST_USERNAME,
+    password: DHL_API_TEST_PASSWORD,
+    accountNumber: DHL_API_TEST_ACCOUNT_NUMBER
+  };
 }
 
 /**
- * Valida que tengamos usuario/contraseña configurados.
- * Si falta algo, lanza un error claro.
+ * Construye el cuerpo de la petición
  */
-function validateConfig() {
-  if (!DHL_API_USERNAME || !DHL_API_PASSWORD) {
-    throw new Error(
-      'Faltan credenciales de DHL. Revisa DHL_API_USERNAME y DHL_API_PASSWORD en tu .env'
-    );
-  }
-}
-
-/**
- * Arma el payload para la petición a DHL con base en los parámetros.
- *
- * params = {
- *   originPostalCode: string
- *   originCityName: string
- *   destinationPostalCode: string
- *   destinationCityName: string
- *   weight: number
- *   length: number
- *   width: number
- *   height: number
- *   plannedShippingDate: string (YYYY-MM-DD)
- *   isCustomsDeclarable?: boolean (por defecto false)
- *   unitOfMeasurement?: 'metric' | 'imperial' (por defecto metric)
- *   nextBusinessDay?: boolean (por defecto true)
- * }
- */
-function buildDhlRequestBody(params) {
+function buildRequestBody(params, accountNumber) {
   const {
     originPostalCode,
     originCityName,
@@ -94,7 +72,7 @@ function buildDhlRequestBody(params) {
   } = params;
 
   return {
-    accountNumber: DHL_API_ACCOUNT_NUMBER,
+    accountNumber,
     originCountryCode: DHL_ORIGIN_COUNTRY_CODE,
     originPostalCode,
     originCityName,
@@ -113,74 +91,53 @@ function buildDhlRequestBody(params) {
 }
 
 /**
- * Llama al API de DHL MyDHL con los parámetros especificados.
- *
- * - Hace POST a la URL base (modo TEST o PROD).
- * - Usa Basic Auth con usuario/contraseña configurados en .env.
- * - Envía header x-version con la versión de API.
- *
- * Devuelve un objeto:
- * {
- *   success: true/false,
- *   mode: 'TEST' | 'PROD',
- *   url: 'https://...',
- *   requestBody: {...},
- *   dhlResponse: {...} // respuesta completa de DHL (data)
- * }
+ * Llama al endpoint de DHL (TEST o PROD según el .env)
  */
 async function getDhlRateQuote(params) {
-  validateConfig();
+  const env = getEnvConfig();
 
-  const baseUrl = getBaseUrl();
-  const url = baseUrl; // Por ahora la URL que nos diste es directa (sin /rates u otra ruta)
+  if (!env.username || !env.password) {
+    throw new Error(
+      `❌ Credenciales DHL no configuradas para modo ${DHL_API_MODE}. Verifica tu archivo .env`
+    );
+  }
 
-  const body = buildDhlRequestBody(params);
+  const body = buildRequestBody(params, env.accountNumber);
 
   try {
-    console.log('[DHL] Enviando petición a:', url);
-    console.log('[DHL] Modo:', DHL_API_MODE);
-    console.log('[DHL] Body parcial:', {
-      accountNumber: body.accountNumber,
-      originPostalCode: body.originPostalCode,
-      originCityName: body.originCityName,
-      destinationPostalCode: body.destinationPostalCode,
-      destinationCityName: body.destinationCityName,
-      weight: body.weight
-    });
+    console.log(`[DHL] 🔄 Enviando petición (${DHL_API_MODE}) a: ${env.baseUrl}`);
 
-    const response = await axios.post(url, body, {
+    const response = await axios.post(env.baseUrl, body, {
       auth: {
-        username: DHL_API_USERNAME,
-        password: DHL_API_PASSWORD
+        username: env.username,
+        password: env.password
       },
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
         'x-version': DHL_API_VERSION
       },
-      timeout: 15000 // 15 segundos por si la red va lenta
+      timeout: 15000
     });
 
     return {
       success: true,
       mode: DHL_API_MODE,
-      url,
+      url: env.baseUrl,
       requestBody: body,
       dhlResponse: response.data
     };
   } catch (error) {
-    // Logueamos lo máximo posible sin exponer el password.
     const status = error.response?.status;
     const data = error.response?.data;
 
-    console.error('[DHL] Error en la petición:');
-    console.error('  Status:', status);
-    console.error('  Data:', JSON.stringify(data, null, 2));
+    console.error(`[DHL] ❌ Error (${DHL_API_MODE}):`, status);
+    if (data) console.error(JSON.stringify(data, null, 2));
 
     return {
       success: false,
       mode: DHL_API_MODE,
-      url,
+      url: env.baseUrl,
       requestBody: body,
       error: {
         message: error.message,
