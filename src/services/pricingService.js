@@ -13,14 +13,20 @@
  *      dhlBasePrice           (sin REMOTE AREA / OVERWEIGHT / OVERSIZE)
  *      dhlExtendedSurcharge   (REMOTE AREA DELIVERY)
  *      dhlSpecialSurcharge    (OVERWEIGHT / OVERSIZE PIECE)
+ *      deliveryDateTime       (ISO: "2025-11-12T23:59:00")
  *  - Para REVENDEDOR, MAYORISTA, MINORISTA:
- *      1) Se aplica la regla (PERCENTAGE / FIXED_PRICE / MARKUP_AMOUNT)
- *         sobre dhlBasePrice ⇒ priceBaseAfterRule
- *      2) Si hay dhlExtendedSurcharge > 0:
- *           extendedFinal = dhlExtendedSurcharge + extended_area_fee
- *      3) Si hay dhlSpecialSurcharge > 0:
- *           specialFinal = dhlSpecialSurcharge + special_handling_fee
+ *      1) Regla sobre dhlBasePrice → priceBaseAfterRule
+ *      2) Zona extendida:
+ *           extendedFinal = (dhlExtendedSurcharge > 0)
+ *                           ? dhlExtendedSurcharge + extended_area_fee
+ *      3) Manejo especial:
+ *           specialFinal = (dhlSpecialSurcharge > 0)
+ *                          ? dhlSpecialSurcharge + special_handling_fee
  *      4) finalPrice = priceBaseAfterRule + extendedFinal + specialFinal
+ *
+ *  - Formato de fecha/hora para el usuario:
+ *      * N y G → solo fecha: "Martes 8 de Noviembre 2025"
+ *      * Resto (1, O, etc.) → fecha + hora: "Martes 8 de Noviembre 2025 09:26"
  */
 
 const { getDhlCleanQuote } = require('./dhlService');
@@ -31,6 +37,97 @@ const {
 const {
   getAvailableCreditsForUserAndWeight
 } = require('../models/mlCreditsModel');
+
+// ===================================
+// Helpers para formato de fecha/hora
+// ===================================
+
+const DAYS_ES = [
+  'Domingo',
+  'Lunes',
+  'Martes',
+  'Miércoles',
+  'Jueves',
+  'Viernes',
+  'Sábado'
+];
+
+const MONTHS_ES = [
+  'enero',
+  'febrero',
+  'marzo',
+  'abril',
+  'mayo',
+  'junio',
+  'julio',
+  'agosto',
+  'septiembre',
+  'octubre',
+  'noviembre',
+  'diciembre'
+];
+
+function formatDateEs(date) {
+  if (!(date instanceof Date) || isNaN(date.getTime())) {
+    return null;
+  }
+
+  const dayName = DAYS_ES[date.getDay()];
+  const day = date.getDate(); // 1-31
+  const monthNameRaw = MONTHS_ES[date.getMonth()] || '';
+  const monthName =
+    monthNameRaw.charAt(0).toUpperCase() + monthNameRaw.slice(1); // "Noviembre"
+  const year = date.getFullYear();
+
+  return `${dayName} ${day} de ${monthName} ${year}`;
+}
+
+function formatTimeEs(date) {
+  if (!(date instanceof Date) || isNaN(date.getTime())) {
+    return null;
+  }
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
+/**
+ * Genera el string final de entrega según el productCode.
+ * - N / G  -> sólo fecha
+ * - otros  -> fecha + hora
+ */
+function buildDeliveryDisplay(productCode, isoString) {
+  if (!isoString) return null;
+
+  const d = new Date(isoString);
+  if (isNaN(d.getTime())) {
+    // Si no se puede parsear, devolvemos tal cual la cadena ISO
+    return isoString;
+  }
+
+  const datePart = formatDateEs(d);
+  const timePart = formatTimeEs(d);
+
+  if (!datePart) return isoString;
+
+  const code = (productCode || '').toUpperCase();
+
+  if (code === 'N' || code === 'G') {
+    // Sólo fecha
+    return datePart;
+  }
+
+  // Otros servicios (1, O, etc.): fecha + hora
+  if (timePart) {
+    return `${datePart} ${timePart}`;
+  }
+
+  return datePart;
+}
+
+// ===================================
+// Lógica principal
+// ===================================
 
 async function quoteForUser(user, shipmentParams) {
   const userRole = (user.rol || user.role || '').toUpperCase();
@@ -117,7 +214,7 @@ async function handleDynamicPricingQuote(user, userRole, shipmentParams, dhlResu
     const dhlExtendedSurcharge = Number(svc.dhlExtendedSurcharge || 0);
     const dhlSpecialSurcharge = Number(svc.dhlSpecialSurcharge || 0);
 
-    // 1) Calculamos priceBaseAfterRule a partir del baseCostDhl
+    // 1) priceBaseAfterRule desde dhlBasePrice
     let priceBaseAfterRule = 0;
 
     switch (rule.mode) {
@@ -141,19 +238,21 @@ async function handleDynamicPricingQuote(user, userRole, shipmentParams, dhlResu
     // 2) Zona extendida
     let extendedFinal = 0;
     if (dhlExtendedSurcharge > 0) {
-      // Tomamos el precio de DHL y le sumamos la ganancia del admin
       extendedFinal = dhlExtendedSurcharge + extendedAreaFee;
     }
 
     // 3) Manejo especial
     let specialFinal = 0;
     if (dhlSpecialSurcharge > 0) {
-      // Tomamos el precio de DHL y le sumamos la ganancia del admin
       specialFinal = dhlSpecialSurcharge + specialHandlingFee;
     }
 
     const extraCharges = extendedFinal + specialFinal;
     const finalPrice = priceBaseAfterRule + extraCharges;
+
+    // 4) Formato amigable de fecha/hora
+    const deliveryIso = svc.deliveryDateTime || svc.deliveryDate || null;
+    const deliveryDisplay = buildDeliveryDisplay(svc.productCode, deliveryIso);
 
     options.push({
       productCode: svc.productCode,
@@ -163,7 +262,8 @@ async function handleDynamicPricingQuote(user, userRole, shipmentParams, dhlResu
       dhlExtendedSurcharge,
       dhlSpecialSurcharge,
       dhlTotalPrice: svc.dhlTotalPrice,
-      deliveryDate: svc.deliveryDate,
+      deliveryIso,
+      deliveryDisplay, // <- lo que mostrará el frontend
       extendedArea: dhlExtendedSurcharge > 0,
       specialHandling: dhlSpecialSurcharge > 0,
       breakdown: {
@@ -219,8 +319,7 @@ async function handleDynamicPricingQuote(user, userRole, shipmentParams, dhlResu
 }
 
 /**
- * MERCADOLIBRE: sólo créditos, pero ahora también devolvemos los servicios DHL
- * para saber qué opciones existen.
+ * MERCADOLIBRE: créditos + servicios DHL disponibles.
  */
 async function handleMercadoLibreQuote(user, shipmentParams, dhlResult) {
   const weight = Number(shipmentParams.weight);
@@ -247,6 +346,8 @@ async function handleMercadoLibreQuote(user, shipmentParams, dhlResult) {
 
   const creditBlock = availableCredits[0];
 
+  // También podríamos formatear deliveryDisplay aquí si quieres,
+  // pero de momento dejamos los servicios crudos de DHL.
   return {
     status: 'ok',
     type: 'MERCADOLIBRE_CREDITS',
