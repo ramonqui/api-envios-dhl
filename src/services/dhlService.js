@@ -24,8 +24,9 @@
  *      dhlExtendedSurcharge   = suma de breakdown.price con "REMOTE AREA ... "
  *      dhlSpecialSurcharge    = suma de breakdown.price con "OVERWEIGHT PIECE" o "OVERSIZE PIECE"
  *      dhlTotalPrice          = base + extended + special
- *  - Lee la fecha estimada de entrega de:
- *      product.estimatedDeliveryDateAndTime  (ej: "2025-11-12T23:59:00")
+ *  - Toma la fecha estimada de entrega de:
+ *      product.deliveryCapabilities.estimatedDeliveryDateAndTime
+ *    por ejemplo "2025-11-12T23:59:00"
  */
 
 const axios = require('axios');
@@ -189,7 +190,8 @@ function computePricesFromBreakdown(breakdownItems) {
  * Interpreta la respuesta completa de DHL:
  * - products[*] filtrando por productCode
  * - por cada uno calculamos base / recargos / total
- * - leemos estimatedDeliveryDateAndTime
+ * - leemos EXPLÍCITAMENTE:
+ *     product.deliveryCapabilities.estimatedDeliveryDateAndTime
  */
 function extractCleanSummary(dhlResponse) {
   const products = Array.isArray(dhlResponse?.products) ? dhlResponse.products : [];
@@ -203,18 +205,21 @@ function extractCleanSummary(dhlResponse) {
 
     const productName = product.productName || '';
 
-    // Fecha estimada de entrega (ISO con hora)
+    // 👇 AQUÍ EL CAMBIO IMPORTANTE:
+    // Buscamos la fecha de entrega donde realmente viene en tu JSON:
+    // product.deliveryCapabilities.estimatedDeliveryDateAndTime
     const deliveryDateTime =
+      product.deliveryCapabilities?.estimatedDeliveryDateAndTime ||
       product.estimatedDeliveryDateAndTime ||
       product.deliveryTime ||
       product.deliveryDate ||
       product.estimatedDeliveryDate ||
       null;
 
-    // También guardamos sólo la parte de fecha (YYYY-MM-DD) para compatibilidad
-    const deliveryDate = deliveryDateTime && deliveryDateTime.includes('T')
-      ? deliveryDateTime.split('T')[0]
-      : deliveryDateTime;
+    const deliveryDate =
+      deliveryDateTime && deliveryDateTime.includes('T')
+        ? deliveryDateTime.split('T')[0]
+        : deliveryDateTime;
 
     const group = selectDetailedPriceBreakdownGroup(product);
     if (!group || !Array.isArray(group.breakdown)) {
