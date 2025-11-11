@@ -14,6 +14,10 @@
  * Expone:
  *  - getDhlRawQuote(params)
  *  - getDhlCleanQuote(params)
+ *
+ * Y ahora:
+ *  - Interpreta products[*] filtrando sólo productCode en {1, O, N, G}
+ *  - Calcula el precio base sumando detailedPriceBreakdown[0].breakdown[*].price
  */
 
 const axios = require('axios');
@@ -31,7 +35,7 @@ const DHL_API_TEST_BASE_URL =
 const DHL_API_PROD_BASE_URL =
   process.env.DHL_API_PROD_BASE_URL || 'https://express.api.dhl.com/mydhlapi';
 
-// Credenciales TEST (las puedes tener como TEST_ o como genéricas)
+// Credenciales TEST
 const DHL_API_TEST_USERNAME = process.env.DHL_API_TEST_USERNAME || process.env.DHL_API_USERNAME;
 const DHL_API_TEST_PASSWORD = process.env.DHL_API_TEST_PASSWORD || process.env.DHL_API_PASSWORD;
 const DHL_API_TEST_ACCOUNT_NUMBER =
@@ -50,6 +54,9 @@ const DHL_ORIGIN_COUNTRY_CODE = 'MX';
 const DHL_DESTINATION_COUNTRY_CODE = 'MX';
 const DHL_UNIT_OF_MEASUREMENT = 'metric';
 
+// Product codes que SÍ queremos mostrar
+const ALLOWED_PRODUCT_CODES = new Set(['1', 'O', 'N', 'G']);
+
 // =========================
 // Helpers internos
 // =========================
@@ -61,7 +68,7 @@ function getEnvConfig() {
   if (DHL_API_MODE === 'PROD') {
     return {
       mode: 'PROD',
-      baseUrl: DHL_API_PROD_BASE_URL, // ej: https://express.api.dhl.com/mydhlapi
+      baseUrl: DHL_API_PROD_BASE_URL,
       username: DHL_API_PROD_USERNAME,
       password: DHL_API_PROD_PASSWORD,
       accountNumber: DHL_API_PROD_ACCOUNT_NUMBER
@@ -71,7 +78,7 @@ function getEnvConfig() {
   // Por defecto: TEST
   return {
     mode: 'TEST',
-    baseUrl: DHL_API_TEST_BASE_URL, // ej: https://express.api.dhl.com/mydhlapi/test
+    baseUrl: DHL_API_TEST_BASE_URL,
     username: DHL_API_TEST_USERNAME,
     password: DHL_API_TEST_PASSWORD,
     accountNumber: DHL_API_TEST_ACCOUNT_NUMBER
@@ -80,21 +87,6 @@ function getEnvConfig() {
 
 /**
  * Construye los parámetros de la query string para /rates.
- *
- * DHL espera algo así:
- *   /rates?accountNumber=...&originCountryCode=MX&originPostalCode=...&...
- *
- * params = {
- *   originPostalCode: string,
- *   originCityName: string,
- *   destinationPostalCode: string,
- *   destinationCityName: string,
- *   weight: number,
- *   length: number,
- *   width: number,
- *   height: number,
- *   plannedShippingDate?: string (YYYY-MM-DD) -> si no viene, usa hoy
- * }
  */
 function buildQueryParams(params, accountNumber) {
   const {
@@ -119,7 +111,6 @@ function buildQueryParams(params, accountNumber) {
     shippingDate = `${yyyy}-${mm}-${dd}`;
   }
 
-  // TODOS los parámetros según lo que definiste
   return {
     accountNumber: accountNumber,
     originCountryCode: DHL_ORIGIN_COUNTRY_CODE,
@@ -140,65 +131,130 @@ function buildQueryParams(params, accountNumber) {
 }
 
 /**
- * Extrae un resumen "limpio" de la respuesta de DHL.
- * NOTA: Ajustaremos esta parte exacta cuando tengamos tus JSON reales
- * (normal, zona extendida, manejo especial).
+ * Intenta obtener la mejor entrada de detailedPriceBreakdown para un producto.
+ * Normalmente usaremos la que tenga currencyType = 'BILLC', si existe.
  */
-function extractCleanSummary(dhlResponse) {
-  let firstProduct = null;
-  let totalPrice = null;
-  let currency = null;
-  let deliveryDate = null;
+function selectDetailedPriceBreakdownGroup(product) {
+  const dpb = Array.isArray(product.detailedPriceBreakdown)
+    ? product.detailedPriceBreakdown
+    : [];
+
+  if (dpb.length === 0) return null;
+  if (dpb.length === 1) return dpb[0];
+
+  const billc = dpb.find((g) => g.currencyType === 'BILLC');
+  return billc || dpb[0];
+}
+
+/**
+ * Determina si en el breakdown hay zona extendida o manejo especial
+ * usando heurísticas basadas en el nombre del cargo.
+ */
+function detectFlagsFromBreakdown(breakdownItems) {
   let extendedArea = false;
   let specialHandling = false;
 
-  if (Array.isArray(dhlResponse?.products) && dhlResponse.products.length > 0) {
-    firstProduct = dhlResponse.products[0];
+  for (const item of breakdownItems) {
+    const name = (item.name || '').toUpperCase();
+    const serviceCode = (item.serviceCode || '').toUpperCase();
+    const serviceTypeCode = (item.serviceTypeCode || '').toUpperCase();
+    const full = `${name} ${serviceCode} ${serviceTypeCode}`;
 
-    if (Array.isArray(firstProduct.totalPrice) && firstProduct.totalPrice.length > 0) {
-      const mainPriceRow = firstProduct.totalPrice[0];
-      totalPrice = mainPriceRow.price ?? null;
-      currency = mainPriceRow.currency ?? null;
+    // Zona extendida: nombres típicos como "REMOTE AREA", "REMOTE AREA DELIVERY", etc.
+    if (
+      full.includes('REMOTE AREA') ||
+      full.includes('REMOTEAREA') ||
+      full.includes('REMOTE AREA DELIVERY') ||
+      full.includes('REMOTE AREA PICKUP')
+    ) {
+      extendedArea = true;
     }
 
-    deliveryDate =
-      firstProduct.deliveryTime ||
-      firstProduct.deliveryDate ||
-      firstProduct.estimatedDeliveryDate ||
-      null;
-
-    const breakdown = Array.isArray(firstProduct.breakdown)
-      ? firstProduct.breakdown
-      : [];
-
-    for (const item of breakdown) {
-      const type = (item.type || '').toUpperCase();
-      const name = (item.name || '').toUpperCase();
-      const desc = (item.description || '').toUpperCase();
-      const fullText = `${type} ${name} ${desc}`;
-
-      if (fullText.includes('EXTENDED') || fullText.includes('REMOTE')) {
-        extendedArea = true;
-      }
-      if (
-        fullText.includes('SPECIAL') ||
-        fullText.includes('OVERSIZE') ||
-        fullText.includes('OVER SIZE') ||
-        fullText.includes('LARGE')
-      ) {
-        specialHandling = true;
-      }
+    // Manejo especial: oversize, large piece, special handling, etc.
+    if (
+      full.includes('OVERSIZE') ||
+      full.includes('OVER SIZE') ||
+      full.includes('LARGE PIECE') ||
+      full.includes('SPECIAL HANDLING') ||
+      full.includes('SPECIAL')
+    ) {
+      specialHandling = true;
     }
   }
 
+  return { extendedArea, specialHandling };
+}
+
+/**
+ * Extrae un resumen "limpio" de la respuesta de DHL.
+ *
+ * - Filtra sólo productos con productCode en {1, O, N, G}
+ * - Para cada producto:
+ *    - productName  -> nombre del servicio
+ *    - dhlPrice     -> suma de breakdown[*].price en detailedPriceBreakdown[0]
+ */
+function extractCleanSummary(dhlResponse) {
+  const products = Array.isArray(dhlResponse?.products) ? dhlResponse.products : [];
+  const services = [];
+
+  for (const product of products) {
+    const code = String(product.productCode || '').trim();
+    if (!ALLOWED_PRODUCT_CODES.has(code)) {
+      continue; // ignoramos productos no deseados
+    }
+
+    const productName = product.productName || '';
+    const deliveryDate =
+      product.deliveryTime ||
+      product.deliveryDate ||
+      product.estimatedDeliveryDate ||
+      null;
+
+    const group = selectDetailedPriceBreakdownGroup(product);
+    if (!group || !Array.isArray(group.breakdown)) {
+      // Si no hay detailedPriceBreakdown, lo saltamos
+      continue;
+    }
+
+    const breakdownItems = group.breakdown;
+
+    // Precio base de DHL: suma de todos los "price" en breakdown
+    let dhlPrice = 0;
+    for (const item of breakdownItems) {
+      const price = Number(item.price);
+      if (!isNaN(price)) {
+        dhlPrice += price;
+      }
+    }
+
+    const currency = group.priceCurrency || null;
+    const { extendedArea, specialHandling } = detectFlagsFromBreakdown(breakdownItems);
+
+    services.push({
+      productCode: code,
+      productName,
+      currency,
+      dhlPrice,
+      deliveryDate,
+      extendedArea,
+      specialHandling,
+      detailedPriceBreakdown: group,
+      rawProduct: product
+    });
+  }
+
+  const primaryService = services.length > 0 ? services[0] : null;
+
   return {
     success: true,
-    price: totalPrice,
-    currency,
-    deliveryDate,
-    extendedArea,
-    specialHandling,
-    product: firstProduct,
+    services,
+    primaryService,
+    // Para compatibilidad con lógica anterior:
+    price: primaryService ? primaryService.dhlPrice : null,
+    currency: primaryService ? primaryService.currency : null,
+    deliveryDate: primaryService ? primaryService.deliveryDate : null,
+    extendedArea: primaryService ? primaryService.extendedArea : false,
+    specialHandling: primaryService ? primaryService.specialHandling : false,
     raw: dhlResponse
   };
 }
@@ -278,7 +334,7 @@ async function getDhlRawQuote(params) {
 }
 
 /**
- * Llama a DHL y devuelve un resumen "limpio" para el frontend.
+ * Llama a DHL y devuelve un resumen "limpio" para el backend/frontend.
  */
 async function getDhlCleanQuote(params) {
   const rawResult = await getDhlRawQuote(params);

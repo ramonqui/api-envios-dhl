@@ -6,6 +6,10 @@
  * - Aplica reglas de precio por rol y rango de peso (pricing_rules)
  * - Aplica recargos de zona extendida / manejo especial (dhl_surcharge_config)
  * - Maneja créditos para usuarios con rol MERCADOLIBRE (ml_credits)
+ *
+ * AHORA:
+ * - Trabaja con TODOS los servicios devueltos por DHL (1, O, N, G)
+ * - Calcula precio final por servicio
  */
 
 const { getDhlCleanQuote } = require('./dhlService');
@@ -20,25 +24,11 @@ const {
 /**
  * Calcula el precio o disponibilidad de crédito
  * para un usuario y un envío específico.
- *
- * @param {Object} user - objeto con { id, email, rol }
- * @param {Object} shipmentParams - parámetros del envío:
- *  {
- *    originPostalCode,
- *    originCityName,
- *    destinationPostalCode,
- *    destinationCityName,
- *    weight,
- *    length,
- *    width,
- *    height,
- *    plannedShippingDate
- *  }
  */
 async function quoteForUser(user, shipmentParams) {
   const userRole = (user.rol || user.role || '').toUpperCase();
 
-  // Primero, siempre consultamos DHL para saber si el envío es válido
+  // Siempre consultamos DHL primero
   const dhlResult = await getDhlCleanQuote(shipmentParams);
 
   if (!dhlResult.success) {
@@ -62,25 +52,20 @@ async function quoteForUser(user, shipmentParams) {
     return await handleDynamicPricingQuote(user, userRole, shipmentParams, dhlResult);
   }
 
-  // Otros roles (ej. ADMIN) -> solo info de DHL
+  // Otros roles (ej. ADMIN) -> sólo info de DHL
   return {
     status: 'ok',
     mode: dhlResult.mode,
     role: userRole,
     type: 'INFO_ONLY',
-    message: 'Rol sin reglas de precio configuradas. Se devuelve solo información de DHL.',
-    dhl: {
-      price: dhlResult.price,
-      currency: dhlResult.currency,
-      deliveryDate: dhlResult.deliveryDate,
-      extendedArea: dhlResult.extendedArea,
-      specialHandling: dhlResult.specialHandling
-    }
+    message: 'Rol sin reglas de precio configuradas. Se devuelven todas las opciones de DHL.',
+    dhl_services: dhlResult.services
   };
 }
 
 /**
  * Maneja la cotización para REVENDEDOR, MAYORISTA, MINORISTA.
+ * Devuelve una lista de opciones (una por cada servicio DHL permitido).
  */
 async function handleDynamicPricingQuote(user, userRole, shipmentParams, dhlResult) {
   const weight = Number(shipmentParams.weight);
@@ -92,15 +77,14 @@ async function handleDynamicPricingQuote(user, userRole, shipmentParams, dhlResu
     };
   }
 
-  if (dhlResult.price == null) {
+  const services = Array.isArray(dhlResult.services) ? dhlResult.services : [];
+  if (services.length === 0) {
     return {
       status: 'error',
-      type: 'DHL_NO_PRICE',
-      message: 'DHL no devolvió un precio base para este envío.'
+      type: 'NO_DHL_SERVICES',
+      message: 'DHL no devolvió servicios disponibles para esta ruta.'
     };
   }
-
-  const baseCostDhl = Number(dhlResult.price);
 
   // 1) Obtenemos la regla de pricing para el rol y el peso
   const rule = await getPricingRuleForRoleAndWeight(userRole, weight);
@@ -112,63 +96,95 @@ async function handleDynamicPricingQuote(user, userRole, shipmentParams, dhlResu
     };
   }
 
-  // 2) Obtenemos la config de recargos DHL
+  // 2) Obtenemos la config de recargos DHL (zona extendida, manejo especial)
   const surchargeConfig = await getDhlSurchargeConfig();
-  const extendedAreaFee = surchargeConfig?.extended_area_fee || 0;
-  const specialHandlingFee = surchargeConfig?.special_handling_fee || 0;
+  const extendedAreaFee = Number(surchargeConfig?.extended_area_fee || 0);
+  const specialHandlingFee = Number(surchargeConfig?.special_handling_fee || 0);
 
-  // 3) Calculamos el precio base según la regla
-  let priceBase = 0;
+  // 3) Calculamos el precio final por cada servicio DHL
+  const options = [];
 
-  switch (rule.mode) {
-    case 'PERCENTAGE':
-      // value = porcentaje (ej. 20 => 20%)
-      priceBase = baseCostDhl * (1 + Number(rule.value) / 100);
-      break;
-    case 'FIXED_PRICE':
-      // value = precio fijo final
-      priceBase = Number(rule.value);
-      break;
-    case 'MARKUP_AMOUNT':
-      // value = monto fijo a sumar
-      priceBase = baseCostDhl + Number(rule.value);
-      break;
-    default:
-      return {
-        status: 'error',
-        type: 'UNKNOWN_PRICING_MODE',
-        message: `Modo de pricing desconocido: ${rule.mode}`
-      };
+  for (const svc of services) {
+    const baseCostDhl = Number(svc.dhlPrice);
+    if (isNaN(baseCostDhl)) {
+      continue; // si por alguna razón no hay precio numérico, lo saltamos
+    }
+
+    let priceBase = 0;
+
+    switch (rule.mode) {
+      case 'PERCENTAGE':
+        // value = porcentaje (ej. 20 => 20%)
+        priceBase = baseCostDhl * (1 + Number(rule.value) / 100);
+        break;
+      case 'FIXED_PRICE':
+        // value = precio fijo final
+        priceBase = Number(rule.value);
+        break;
+      case 'MARKUP_AMOUNT':
+        // value = monto fijo a sumar
+        priceBase = baseCostDhl + Number(rule.value);
+        break;
+      default:
+        return {
+          status: 'error',
+          type: 'UNKNOWN_PRICING_MODE',
+          message: `Modo de pricing desconocido: ${rule.mode}`
+        };
+    }
+
+    let extraCharges = 0;
+    const extraDetails = {};
+
+    if (svc.extendedArea) {
+      extraCharges += extendedAreaFee;
+      extraDetails.extendedAreaFee = extendedAreaFee;
+    }
+    if (svc.specialHandling) {
+      extraCharges += specialHandlingFee;
+      extraDetails.specialHandlingFee = specialHandlingFee;
+    }
+
+    const finalPrice = priceBase + extraCharges;
+
+    options.push({
+      productCode: svc.productCode,
+      productName: svc.productName,
+      currency: svc.currency,
+      dhlPrice: baseCostDhl,
+      deliveryDate: svc.deliveryDate,
+      extendedArea: svc.extendedArea,
+      specialHandling: svc.specialHandling,
+      breakdown: {
+        basePriceDhl: baseCostDhl,
+        priceBaseAfterRule: priceBase,
+        extraCharges,
+        ...extraDetails
+      },
+      finalPrice
+    });
   }
 
-  // 4) Recargos por zona extendida / manejo especial
-  let extraCharges = 0;
-  const extraDetails = {};
-
-  if (dhlResult.extendedArea) {
-    extraCharges += extendedAreaFee;
-    extraDetails.extendedAreaFee = extendedAreaFee;
-  }
-  if (dhlResult.specialHandling) {
-    extraCharges += specialHandlingFee;
-    extraDetails.specialHandlingFee = specialHandlingFee;
+  if (options.length === 0) {
+    return {
+      status: 'error',
+      type: 'NO_VALID_OPTIONS',
+      message: 'No se pudieron calcular opciones de precio válidas.'
+    };
   }
 
-  const finalPrice = priceBase + extraCharges;
+  // Para comodidad del frontend, devolvemos también rango de precios
+  const finalPrices = options.map((o) => o.finalPrice);
+  const minFinalPrice = Math.min(...finalPrices);
+  const maxFinalPrice = Math.max(...finalPrices);
 
   return {
     status: 'ok',
     type: 'DYNAMIC_PRICING',
     role: userRole,
     user_id: user.id,
-    dhl: {
-      mode: dhlResult.mode,
-      basePriceFromDhl: baseCostDhl,
-      currency: dhlResult.currency,
-      deliveryDate: dhlResult.deliveryDate,
-      extendedArea: dhlResult.extendedArea,
-      specialHandling: dhlResult.specialHandling
-    },
+    dhlMode: dhlResult.mode,
+    dhlQueryParams: dhlResult.queryParams,
     pricingRule: {
       id: rule.id,
       mode: rule.mode,
@@ -181,13 +197,13 @@ async function handleDynamicPricingQuote(user, userRole, shipmentParams, dhlResu
       extended_area_fee: extendedAreaFee,
       special_handling_fee: specialHandlingFee
     },
-    breakdown: {
-      basePriceDhl: baseCostDhl,
-      priceBaseAfterRule: priceBase,
-      extraCharges,
-      ...extraDetails
+    summary: {
+      currency: options[0].currency,
+      minFinalPrice,
+      maxFinalPrice,
+      servicesCount: options.length
     },
-    finalPrice: finalPrice
+    options // <- lista de servicios con su precio final
   };
 }
 
@@ -213,12 +229,7 @@ async function handleMercadoLibreQuote(user, shipmentParams, dhlResult) {
       message: 'No tienes créditos disponibles para este rango de peso.',
       role: 'MERCADOLIBRE',
       user_id: user.id,
-      dhl_info: {
-        mode: dhlResult.mode,
-        deliveryDate: dhlResult.deliveryDate,
-        extendedArea: dhlResult.extendedArea,
-        specialHandling: dhlResult.specialHandling
-      }
+      dhl_services: dhlResult.services || []
     };
   }
 
@@ -229,12 +240,7 @@ async function handleMercadoLibreQuote(user, shipmentParams, dhlResult) {
     type: 'MERCADOLIBRE_CREDITS',
     role: 'MERCADOLIBRE',
     user_id: user.id,
-    dhl_info: {
-      mode: dhlResult.mode,
-      deliveryDate: dhlResult.deliveryDate,
-      extendedArea: dhlResult.extendedArea,
-      specialHandling: dhlResult.specialHandling
-    },
+    dhl_services: dhlResult.services || [],
     creditUsedCandidate: {
       id: creditBlock.id,
       weight_min_kg: Number(creditBlock.weight_min_kg),
