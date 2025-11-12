@@ -6,6 +6,8 @@
  * - Valida datos básicos del envío
  * - Valida códigos postales (formato y existencia) con api-codigos-postales-mx
  * - Obtiene municipio/estado/ciudad para origen y destino
+ * - Rellena originCityName y destinationCityName con el MUNICIPIO de cada CP
+ * - Si no viene plannedShippingDate, usa la fecha de HOY (YYYY-MM-DD)
  * - Llama al servicio de pricing (quoteForUser) que integra DHL + reglas internas
  * - Devuelve:
  *    * resultado de pricing
@@ -16,19 +18,30 @@ const { quoteForUser } = require('../services/pricingService');
 const { lookupPostalCode } = require('../services/postalCodeService');
 
 /**
+ * Devuelve una fecha en formato YYYY-MM-DD con la fecha actual del servidor.
+ */
+function getTodayDateString() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+/**
  * POST /api/pricing/quote
  *
  * Body esperado:
  * {
  *   "originPostalCode": "50110",
- *   "originCityName": "Toluca",        // opcional, si no viene usamos ciudad/municipio del CP
+ *   "originCityName": "Toluca",        // OPCIONAL, SE REMPLAZA POR MUNICIPIO DEL CP
  *   "destinationPostalCode": "92800",
- *   "destinationCityName": "Tuxpan",   // opcional
+ *   "destinationCityName": "Tuxpan",   // OPCIONAL, SE REMPLAZA POR MUNICIPIO DEL CP
  *   "weight": 1,
  *   "length": 10,
  *   "width": 10,
  *   "height": 10,
- *   "plannedShippingDate": "2025-11-11" // opcional
+ *   "plannedShippingDate": "2025-11-11" // OPCIONAL, SI NO VIENE SE USA HOY
  * }
  *
  * Requiere autenticación (JWT en Authorization: Bearer <token>).
@@ -45,9 +58,9 @@ async function quoteShipment(req, res) {
 
     const {
       originPostalCode,
-      originCityName,
+      originCityName,       // NO usaremos este valor directo, lo sobreescribimos con municipio del CP
       destinationPostalCode,
-      destinationCityName,
+      destinationCityName,  // Igual, será sobreescrito con municipio del CP
       weight,
       length,
       width,
@@ -145,7 +158,7 @@ async function quoteShipment(req, res) {
     }
 
     // ==========================================
-    // Validar CP de destino
+    // Validar CP de destino con api-codigos-postales-mx
     // ==========================================
     const destinoInfo = await lookupPostalCode(destinationPostalCode);
 
@@ -160,20 +173,37 @@ async function quoteShipment(req, res) {
     }
 
     // ==========================================
-    // Construir parámetros para la cotización DHL
+    // ORIGIN / DESTINATION CITY:
+    // Usamos SIEMPRE el MUNICIPIO del CP
+    // (si no hay municipio, usamos ciudad)
     // ==========================================
 
     const finalOriginCity =
-      originCityName ||
-      origenInfo.ciudad ||
       origenInfo.municipio ||
+      origenInfo.ciudad ||
       null;
 
     const finalDestinationCity =
-      destinationCityName ||
-      destinoInfo.ciudad ||
       destinoInfo.municipio ||
+      destinoInfo.ciudad ||
       null;
+
+    // ==========================================
+    // plannedShippingDate: si no viene, usar HOY
+    // ==========================================
+
+    let finalPlannedShippingDate = plannedShippingDate;
+
+    if (!finalPlannedShippingDate || String(finalPlannedShippingDate).trim() === '') {
+      finalPlannedShippingDate = getTodayDateString();
+    } else {
+      finalPlannedShippingDate = String(finalPlannedShippingDate).trim();
+      // (Opcional) podríamos validar el formato YYYY-MM-DD aquí si quieres
+    }
+
+    // ==========================================
+    // Construir parámetros para la cotización DHL
+    // ==========================================
 
     const shipmentParams = {
       originPostalCode: String(originPostalCode).trim(),
@@ -184,7 +214,7 @@ async function quoteShipment(req, res) {
       length: lengthNum,
       width: widthNum,
       height: heightNum,
-      plannedShippingDate
+      plannedShippingDate: finalPlannedShippingDate
     };
 
     // ==========================================
