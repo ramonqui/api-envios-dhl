@@ -12,6 +12,7 @@
  * - Devuelve:
  *    * resultado de pricing
  *    * originLocation / destinationLocation con municipio y estado
+ *    * originState / destinationState (estado de origen y destino en el nivel raíz)
  */
 
 const { quoteForUser } = require('../services/pricingService');
@@ -58,9 +59,9 @@ async function quoteShipment(req, res) {
 
     const {
       originPostalCode,
-      originCityName,       // NO usaremos este valor directo, lo sobreescribimos con municipio del CP
+      originCityName,       // NO usamos directamente, lo sobreescribimos
       destinationPostalCode,
-      destinationCityName,  // Igual, será sobreescrito con municipio del CP
+      destinationCityName,  // NO usamos directamente, lo sobreescribimos
       weight,
       length,
       width,
@@ -198,7 +199,6 @@ async function quoteShipment(req, res) {
       finalPlannedShippingDate = getTodayDateString();
     } else {
       finalPlannedShippingDate = String(finalPlannedShippingDate).trim();
-      // (Opcional) podríamos validar el formato YYYY-MM-DD aquí si quieres
     }
 
     // ==========================================
@@ -241,6 +241,11 @@ async function quoteShipment(req, res) {
 
     return res.json({
       ...quoteResult,
+
+      // NUEVOS CAMPOS EN EL NIVEL RAÍZ:
+      originState: origenInfo.estado || null,
+      destinationState: destinoInfo.estado || null,
+
       originLocation: {
         cp: origenInfo.cp,
         municipio: origenInfo.municipio,
