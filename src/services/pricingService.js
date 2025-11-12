@@ -1,280 +1,240 @@
 // /Users/macbookpro/proyectos/dhl-guias-api/src/services/pricingService.js
 
-/**
- * Servicio de pricing:
- * - Llama a DHL usando weight = params.shipmentWeightUsed (mayor entre volumétrico y físico).
- * - Suma "detailedPriceBreakdown" (MXN, currencyType BILLC o PULCL).
- * - Identifica recargos REMOTE AREA DELIVERY / OVERWEIGHT PIECE / OVERSIZE PIECE.
- * - Aplica regla de ganancia según rol/config.
- * - REDONDEA hacia arriba (ceil) TODOS los precios que mostramos al cliente.
- * - Filtra por productCode: ["1","O","N","G"].
- * - Da formato de fecha de entrega y expone campos de control.
- */
-
-const axios = require('axios');
-const { buildDhlRatesUrl } = require('./dhlService'); // tu helper que construye URL con querystring (GET)
-const { getRolePricingRules } = require('./rulesService'); // tu servicio de reglas por rol (porcentaje/fijo/suma fija)
-const { formatDeliveryDisplay } = require('../utils/deliveryFormat'); // tu helper para formato de fecha/hora
-
-// Helpers locales
-const ceilMoney = (n) => Math.ceil(Number(n || 0));
-const sum = (arr) => arr.reduce((a, b) => a + Number(b || 0), 0);
-
-// DHL solo acepta estos servicios en tu negocio
-const ALLOWED_CODES = new Set(['1', 'O', 'N', 'G']);
+const { getDhlConfig, getDhlQuote } = require('./dhlService');
+const { getCpInfoOrThrow } = require('./postalService'); // tu servicio que valida CP y devuelve {municipio, estado}
+const { roundUpInt, computeVolumetricKg, maxShipmentWeight } = require('../utils/weight');
+const { formatDeliveryDisplay } = require('../utils/deliveryFormat');
+const { applyAdminRules } = require('./rulesService'); // ya creado en tu proyecto
+const logger = require('../utils/logger');
 
 /**
- * Extrae el precio base de DHL sumando el breakdown relevante (MXN).
- * Intenta primero currencyType BILLC; si no, PULCL.
+ * Normaliza y redondea hacia arriba pesos/dimensiones
  */
-function extractDhlBasePriceMXN(product) {
-  if (!product?.detailedPriceBreakdown?.length) return 0;
-
-  // Busca bloque en MXN, prioriza BILLC
-  const block =
-    product.detailedPriceBreakdown.find((b) => b.priceCurrency === 'MXN' && b.currencyType === 'BILLC') ||
-    product.detailedPriceBreakdown.find((b) => b.priceCurrency === 'MXN' && b.currencyType === 'PULCL');
-
-  if (!block?.breakdown?.length) return 0;
-
-  // Suma todos los "price" del breakdown (EXPRESS DOMESTIC, DEMAND SURCHARGE, FUEL SURCHARGE, etc.)
-  const base = sum(block.breakdown.map((item) => item.price || 0));
-  return base;
+function normalizeDims({ weight, length, width, height }) {
+  const W = Math.ceil(Number(weight || 0));
+  const L = Math.ceil(Number(length || 0));
+  const Wi = Math.ceil(Number(width || 0));
+  const H = Math.ceil(Number(height || 0));
+  return { W, L, Wi, H };
 }
 
 /**
- * Detecta recargos (MXN) que te interesan: REMOTE AREA DELIVERY, OVERWEIGHT PIECE, OVERSIZE PIECE.
- * Regresa objeto { remoteFee, overweightFee, oversizeFee }
+ * Construye params para DHL GET /rates con querystring
  */
-function extractSpecialFeesMXN(product) {
-  const result = { remoteFee: 0, overweightFee: 0, oversizeFee: 0 };
-  if (!product?.detailedPriceBreakdown?.length) return result;
-
-  const block =
-    product.detailedPriceBreakdown.find((b) => b.priceCurrency === 'MXN' && b.currencyType === 'BILLC') ||
-    product.detailedPriceBreakdown.find((b) => b.priceCurrency === 'MXN' && b.currencyType === 'PULCL');
-
-  if (!block?.breakdown?.length) return result;
-
-  for (const item of block.breakdown) {
-    const name = String(item?.name || '').toUpperCase();
-
-    if (name.includes('REMOTE AREA DELIVERY')) {
-      result.remoteFee = Number(item.price || 0);
-    }
-    if (name.includes('OVERWEIGHT PIECE')) {
-      result.overweightFee = Number(item.price || 0);
-    }
-    if (name.includes('OVERSIZE PIECE')) {
-      result.oversizeFee = Number(item.price || 0);
-    }
-  }
-  return result;
-}
-
-/**
- * Aplica la regla de ganancia configurada para el rol del usuario, por rango de peso.
- * modes: percentage / fixed_override / fixed_add
- * Retorna precio cliente (antes de extras) y detalle.
- */
-function applyProfitRule(baseMXN, shipmentWeightUsed, roleRules) {
-  const rule = roleRules.pickRuleForWeight(shipmentWeightUsed);
-
-  // Sin regla -> precio base sin cambios
-  if (!rule) {
-    return {
-      mode: 'none',
-      ruleRef: null,
-      priceClient: baseMXN
-    };
-  }
-
-  const mode = rule.mode; // 'percentage' | 'fixed_override' | 'fixed_add'
-  let priceClient = baseMXN;
-
-  if (mode === 'percentage') {
-    // aumenta % sobre base
-    priceClient = baseMXN * (1 + (Number(rule.value) || 0) / 100);
-  } else if (mode === 'fixed_override') {
-    // ignora base, coloca precio fijo
-    priceClient = Number(rule.value || 0);
-  } else if (mode === 'fixed_add') {
-    // suma fija a la base
-    priceClient = baseMXN + Number(rule.value || 0);
-  }
-
+function buildDhlParams({
+  accountNumber,
+  originCp, originCity, destCp, destCity,
+  weight, length, width, height,
+  plannedShippingDate,
+}) {
   return {
-    mode,
-    ruleRef: rule,
-    priceClient
+    accountNumber,
+    originCountryCode: 'MX',
+    originPostalCode: originCp,
+    originCityName: originCity,
+    destinationCountryCode: 'MX',
+    destinationPostalCode: destCp,
+    destinationCityName: destCity,
+    weight,
+    length,
+    width,
+    height,
+    plannedShippingDate,    // YYYY-MM-DD
+    isCustomsDeclarable: false,
+    unitOfMeasurement: 'metric',
+    nextBusinessDay: true,
   };
 }
 
 /**
- * Aplica ganancias para cargos adicionales (zona extendida y manejo especial) si existen.
- * Retorna objeto con extras ya con ganancia y total de extras.
+ * Filtra productos por códigos permitidos: 1, O, N, G
  */
-function applyExtrasProfit(extrasMXN, roleRules) {
-  const { remoteFee, overweightFee, oversizeFee } = extrasMXN;
-
-  const conf = roleRules.getExtrasGain(); // por ejemplo { remote: {mode, value}, special: {mode, value} }
-
-  function applyOne(fee, gainConf) {
-    if (!fee || fee <= 0 || !gainConf) return 0;
-    const mode = gainConf.mode; // 'percentage' | 'fixed_add'
-    let final = fee;
-    if (mode === 'percentage') {
-      final = fee * (1 + (Number(gainConf.value) || 0) / 100);
-    } else if (mode === 'fixed_add') {
-      final = fee + Number(gainConf.value || 0);
-    }
-    return final;
-  }
-
-  const remoteWithGain   = applyOne(remoteFee,   conf?.remote);
-  const overweightWithGain = applyOne(overweightFee, conf?.special);
-  const oversizeWithGain   = applyOne(oversizeFee,   conf?.special);
-
-  const extrasTotal = remoteWithGain + overweightWithGain + oversizeWithGain;
-
-  return {
-    remoteWithGain,
-    overweightWithGain,
-    oversizeWithGain,
-    extrasTotal
-  };
+function isAllowedProduct(code) {
+  const c = String(code || '').toUpperCase();
+  return c === '1' || c === 'O' || c === 'N' || c === 'G';
 }
 
 /**
- * Llama a DHL (GET) usando weight = params.shipmentWeightUsed y construye opciones.
+ * Extrae estimatedDeliveryDateAndTime del producto DHL
  */
-async function quoteForUser(user, params) {
+function extractEta(product) {
+  return product?.deliveryCapabilities?.estimatedDeliveryDateAndTime || null;
+}
+
+/**
+ * Suma el "price" de breakdown al nivel superior (BILLC / MXN).
+ * Además detecta extras: REMOTE AREA DELIVERY, OVERWEIGHT PIECE, OVERSIZE PIECE
+ */
+function breakdownMxSum(product) {
+  const dpb = product?.detailedPriceBreakdown;
+  if (!Array.isArray(dpb)) return { base: 0, extraRemote: 0, extraOverweight: 0, extraOversize: 0 };
+
+  const mx = dpb.find(b => b.currencyType === 'BILLC' && b.priceCurrency === 'MXN');
+  if (!mx || !Array.isArray(mx.breakdown)) return { base: 0, extraRemote: 0, extraOverweight: 0, extraOversize: 0 };
+
+  let base = 0, extraRemote = 0, extraOverweight = 0, extraOversize = 0;
+
+  for (const item of mx.breakdown) {
+    const name = (item?.name || '').toUpperCase();
+    const price = Number(item?.price || 0);
+
+    // Suma base (todo lo que tenga "price")
+    if (price > 0) base += price;
+
+    // Detectar extras específicos
+    if (name.includes('REMOTE AREA DELIVERY')) extraRemote += price;
+    if (name.includes('OVERWEIGHT PIECE'))     extraOverweight += price;
+    if (name.includes('OVERSIZE PIECE'))       extraOversize += price;
+  }
+
+  return { base, extraRemote, extraOverweight, extraOversize };
+}
+
+/**
+ * Servicio principal: genera cotización para un usuario.
+ * - Valida CPs con tu API
+ * - Completa municipios como cityName para DHL
+ * - Redondea dimensiones
+ * - Calcula peso volumétrico y el usado
+ * - Llama a DHL
+ * - Filtra productos y arma opciones con deliveryDisplay formateado
+ * - Aplica reglas admin (porcentaje/fijo/suma fija) y redondea hacia arriba
+ * - Suma extras (zona extendida / piezas sobredimensionadas o sobrepeso) + markup de admin para extras
+ */
+async function quoteForUser(user, payload) {
+  const startedAt = Date.now();
   try {
-    const {
-      originPostalCode,
-      originCityName,
-      destinationPostalCode,
-      destinationCityName,
-      plannedShippingDate,
-      shipmentWeightUsed, // clave
-      // guardamos también estos por si los quieres mostrar:
-      weightRounded, lengthRounded, widthRounded, heightRounded, volumetricWeight
-    } = params;
+    // 1) Validar/obtener info de CPs
+    const originCp = String(payload.originPostalCode || '').trim();
+    const destCp   = String(payload.destinationPostalCode || '').trim();
 
-    // Construir URL para DHL (GET /rates?...), usando tu helper preexistente
-    const url = buildDhlRatesUrl({
-      accountNumber: process.env.DHL_ACCOUNT_NUMBER,
-      originCountryCode: 'MX',
-      originPostalCode,
-      originCityName,
-      destinationCountryCode: 'MX',
-      destinationPostalCode,
-      destinationCityName,
-      weight: shipmentWeightUsed, // **peso tarifario**
-      length: lengthRounded,
-      width:  widthRounded,
-      height: heightRounded,
-      plannedShippingDate,
-      isCustomsDeclarable: false,
-      unitOfMeasurement: 'metric',
-      nextBusinessDay: true
+    if (!/^\d{5}$/.test(originCp) || !/^\d{5}$/.test(destCp)) {
+      return {
+        status: 'error',
+        message: 'Códigos postales inválidos (5 dígitos requeridos).',
+        type: 'VALIDATION_ERROR',
+      };
+    }
+
+    const originInfo = await getCpInfoOrThrow(originCp); // { municipio, estado }
+    const destInfo   = await getCpInfoOrThrow(destCp);
+
+    // 2) Normalizar dimensiones
+    const { W, L, Wi, H } = normalizeDims(payload);
+
+    // 3) Peso volumétrico y usado
+    const volumetricWeight = computeVolumetricKg(L, Wi, H); // (L*W*H)/5000
+    const shipmentWeightUsed = maxShipmentWeight(W, volumetricWeight); // mayor entre físico y volumétrico
+
+    // 4) Fecha planeada (YYYY-MM-DD)
+    const planned = (payload.plannedShippingDate || new Date().toISOString().slice(0, 10));
+
+    // 5) DHL params
+    const cfg = getDhlConfig();
+    const dhlParams = buildDhlParams({
+      accountNumber: cfg.accountNumber,
+      originCp,
+      originCity: originInfo.municipio,
+      destCp,
+      destCity: destInfo.municipio,
+      weight: shipmentWeightUsed,
+      length: L,
+      width: Wi,
+      height: H,
+      plannedShippingDate: planned,
     });
 
-    const headers = {
-      'x-version': process.env.DHL_API_VERSION || '3.1.0'
-    };
+    logger.info('[pricingService] solicitando DHL rates', { dhlParams, mode: cfg.mode });
 
-    const auth = {
-      username: process.env.DHL_API_USERNAME,
-      password: process.env.DHL_API_PASSWORD
-    };
+    // 6) Llamar a DHL
+    const dhlResp = await getDhlQuote(dhlParams);
 
-    const resp = await axios.get(url, { headers, auth });
-    const data = resp?.data;
-    const products = Array.isArray(data?.products) ? data.products : [];
+    if (dhlResp.status !== 'ok') {
+      logger.error('[pricingService] DHL error', dhlResp);
+      return {
+        status: 'error',
+        message: 'No se pudo obtener la cotización.',
+        type: 'PRICING_SERVICE_ERROR',
+        details: dhlResp,
+      };
+    }
 
-    // Reglas/ganancias por rol
-    const roleRules = await getRolePricingRules(user.rol || 'MINORISTA');
+    const products = Array.isArray(dhlResp.data?.products) ? dhlResp.data.products : [];
+    const allowed = products.filter(p => isAllowedProduct(p?.productCode));
 
-    // Construir opciones filtradas
+    // 7) Construir opciones
     const options = [];
-
-    for (const p of products) {
-      const code = String(p.productCode || '').trim();
-      if (!ALLOWED_CODES.has(code)) continue;
-
-      // Precio base DHL (MXN)
-      const baseMXN = extractDhlBasePriceMXN(p);
-
-      // Recargos especiales detectados
-      const extrasMXN = extractSpecialFeesMXN(p);
-
-      // Aplicar ganancia al precio base
-      const applied = applyProfitRule(baseMXN, shipmentWeightUsed, roleRules);
-
-      // Aplicar ganancia a extras
-      const extrasApplied = applyExtrasProfit(extrasMXN, roleRules);
-
-      // Total antes de redondeo
-      const subtotalBeforeRound = applied.priceClient;
-      const totalWithExtrasBeforeRound = applied.priceClient + extrasApplied.extrasTotal;
-
-      // *** Requisito: redondear hacia arriba los costos mostrados ***
-      const priceBaseAfterRule   = ceilMoney(subtotalBeforeRound);
-      const totalWithExtras      = ceilMoney(totalWithExtrasBeforeRound);
-      const remoteWithGainCeil   = ceilMoney(extrasApplied.remoteWithGain);
-      const overweightWithGainCeil = ceilMoney(extrasApplied.overweightWithGain);
-      const oversizeWithGainCeil   = ceilMoney(extrasApplied.oversizeWithGain);
-
-      const deliveryISO = p?.deliveryCapabilities?.estimatedDeliveryDateAndTime || null;
+    for (const p of allowed) {
+      const { base, extraRemote, extraOverweight, extraOversize } = breakdownMxSum(p);
+      const etaIso = extractEta(p);
       const deliveryDisplay = formatDeliveryDisplay({
-        productCode: code,
-        isoString: deliveryISO
+        productCode: p.productCode,
+        isoString: etaIso,
       });
+
+      // Aplica reglas admin al componente base
+      const baseAfterRule = applyAdminRules({
+        role: user?.rol || 'MINORISTA',
+        weightKg: shipmentWeightUsed,
+        basePrice: base,
+      });
+
+      // Ganancia admin para extras
+      const extrasMarkup = applyAdminRules({
+        role: user?.rol || 'MINORISTA',
+        weightKg: shipmentWeightUsed,
+        basePrice: extraRemote + extraOverweight + extraOversize,
+        isExtra: true, // tu rulesService puede decidir otra lógica para extras
+      });
+
+      // Totales (redondeados hacia arriba)
+      const priceBaseAfterRule = roundUpInt(baseAfterRule);
+      const extrasAfterRule    = roundUpInt(extrasMarkup);
+      const totalWithExtras    = roundUpInt(priceBaseAfterRule + extrasAfterRule);
 
       options.push({
-        productCode: code,
-        productName: p.productName || null,
-
-        // Muestra de fecha amigable
-        deliveryISO,
+        productCode: p.productCode,
+        productName: p.productName,
         deliveryDisplay,
-
-        // Precios (ya redondeados hacia arriba)
-        priceDhlBase: ceilMoney(baseMXN),
+        baseMx: Math.ceil(base),
+        extras: {
+          remoteArea: Math.ceil(extraRemote),
+          overweight: Math.ceil(extraOverweight),
+          oversize: Math.ceil(extraOversize),
+          extrasAfterRule,
+        },
         priceBaseAfterRule,
-        zoneExtendedFee: remoteWithGainCeil,
-        specialHandlingFee: ceilMoney(overweightWithGainCeil + oversizeWithGainCeil),
         totalWithExtras,
-
-        // Diagnóstico y contexto
-        debug: {
-          weightUsed: shipmentWeightUsed,
-          weightRounded, lengthRounded, widthRounded, heightRounded, volumetricWeight,
-          baseMXN,
-          appliedRuleMode: applied.mode,
-          extrasMXN,
-          extrasApplied: {
-            remoteWithGain: remoteWithGainCeil,
-            overweightWithGain: overweightWithGainCeil,
-            oversizeWithGain: oversizeWithGainCeil
-          }
-        }
       });
     }
+
+    const tookMs = Date.now() - startedAt;
+    logger.info('[pricingService] quoteForUser ok', { count: options.length, tookMs });
 
     return {
       status: 'ok',
-      type: 'DYNAMIC_PRICING',
-      options
+      cpValidation: {
+        origin: { cp: originCp, municipio: originInfo.municipio, estado: originInfo.estado },
+        destination: { cp: destCp, municipio: destInfo.municipio, estado: destInfo.estado },
+      },
+      requestEcho: {
+        weight: W, length: L, width: Wi, height: H,
+        volumetricWeight,
+        shipmentWeightUsed,
+        plannedShippingDate: planned,
+      },
+      options,
     };
-  } catch (error) {
-    console.error('[pricingService] quoteForUser error:', error?.response?.data || error?.message || error);
+  } catch (err) {
+    logger.error('[pricingService] quoteForUser error', err);
     return {
       status: 'error',
       message: 'No se pudo obtener la cotización.',
       type: 'PRICING_SERVICE_ERROR',
-      error: error?.response?.data || error?.message || 'sin detalle'
+      details: {
+        message: err.message,
+        stack: err.stack,
+      },
     };
   }
 }

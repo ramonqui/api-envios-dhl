@@ -126,3 +126,32 @@ module.exports = {
   brevoPing,
   brevoConfig
 };
+
+
+// DEBUG: ver configuración de DHL sin credenciales sensibles
+const { getDhlConfig } = require('../services/dhlService');
+
+async function debugDhlConfig(req, res) {
+  try {
+    if ((req.headers['x-admin-key'] || '') !== (process.env.ADMIN_KEY || '')) {
+      return res.status(403).json({ status: 'error', message: 'No autorizado' });
+    }
+    const cfg = getDhlConfig();
+    return res.json({
+      status: 'ok',
+      dhl: {
+        mode: cfg.mode,
+        baseUrl: cfg.baseUrl,
+        accountNumber: cfg.accountNumber,
+        version: cfg.version,
+      }
+    });
+  } catch (e) {
+    return res.status(500).json({ status: 'error', message: e.message });
+  }
+}
+
+module.exports = {
+  // ...exporta los demás handlers que ya tenías
+  debugDhlConfig,
+};

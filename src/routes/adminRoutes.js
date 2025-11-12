@@ -37,3 +37,14 @@ router.get('/brevo/config', brevoConfig);
 router.post('/test-email', sendAdminTestEmail);
 
 module.exports = router;
+const express = require('express');
+const router = express.Router();
+
+const { debugDhlConfig } = require('../controllers/adminController');
+
+// ... tus demás rutas admin
+
+// GET /api/admin/debug/dhl-config  (x-admin-key requerido)
+router.get('/debug/dhl-config', debugDhlConfig);
+
+module.exports = router;
