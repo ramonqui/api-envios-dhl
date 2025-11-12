@@ -1,49 +1,59 @@
+// /Users/macbookpro/proyectos/dhl-guias-api/src/middlewares/authMiddleware.js
+
 const jwt = require('jsonwebtoken');
-const dotenv = require('dotenv');
 
-dotenv.config();
-
+/**
+ * Middleware de autenticación con JWT.
+ *
+ * Espera un header:
+ *   Authorization: Bearer <token>
+ *
+ * Si el token es válido, agrega:
+ *   req.user = { id, email, rol, ... }
+ */
 function authMiddleware(req, res, next) {
-  const authHeader = req.headers['authorization'];
+  try {
+    const authHeader = req.headers['authorization'] || req.headers['Authorization'] || '';
+    const parts = authHeader.split(' ');
 
-  if (!authHeader) {
-    return res.status(401).json({
-      status: 'error',
-      message: 'No se encontró el encabezado de autorización.'
-    });
+    if (parts.length !== 2 || parts[0] !== 'Bearer') {
+      return res.status(401).json({
+        status: 'error',
+        message: 'No autorizado. Falta token Bearer.'
+      });
     }
 
-  // Esperamos formato: Bearer token
-  const parts = authHeader.split(' ');
-  if (parts.length !== 2) {
-    return res.status(401).json({
-      status: 'error',
-      message: 'Formato de autorización inválido.'
+    const token = parts[1];
+
+    if (!process.env.JWT_SECRET) {
+      return res.status(500).json({
+        status: 'error',
+        message: 'Falta configurar JWT_SECRET en el servidor.'
+      });
+    }
+
+    jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+      if (err || !decoded) {
+        return res.status(401).json({
+          status: 'error',
+          message: 'Token inválido o expirado.'
+        });
+      }
+
+      // decoded debería tener { id, email, rol, iat, exp }
+      req.user = decoded;
+      next();
     });
-  }
-
-  const scheme = parts[0];
-  const token = parts[1];
-
-  if (!/^Bearer$/i.test(scheme)) {
-    return res.status(401).json({
-      status: 'error',
-      message: 'Tipo de token inválido.'
-    });
-  }
-
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    // aquí vienen: id, email, rol
-    req.user = decoded;
-    return next();
   } catch (error) {
-    return res.status(401).json({
+    console.error('Error en authMiddleware:', error);
+    return res.status(500).json({
       status: 'error',
-      message: 'Token inválido o expirado.',
-      error: error.message
+      message: 'Error interno en autenticación.',
+      error: error.message || 'sin mensaje'
     });
   }
 }
 
-module.exports = authMiddleware;
+module.exports = {
+  authMiddleware
+};
