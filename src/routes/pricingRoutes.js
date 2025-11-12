@@ -3,14 +3,14 @@
 const express = require('express');
 const router = express.Router();
 
-// Middleware de autenticación
+// Middleware de autenticación (JWT)
 const { authMiddleware } = require('../middlewares/authMiddleware');
 
-// Controlador de pricing
-const pricingController = require('../controllers/pricingController');
+// Controlador de pricing: importamos directamente la función
+const { quoteShipment } = require('../controllers/pricingController');
 
 // POST /api/pricing/quote
 // Protegido con JWT
-router.post('/quote', authMiddleware, pricingController.quoteShipment);
+router.post('/quote', authMiddleware, quoteShipment);
 
 module.exports = router;
