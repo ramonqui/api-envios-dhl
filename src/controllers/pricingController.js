@@ -135,8 +135,6 @@ async function quoteShipment(req, res) {
     const origenInfo = await lookupPostalCode(originPostalCode);
 
     if (!origenInfo.ok) {
-      // Si el problema es sólo formato, ya lo habíamos validado antes,
-      // aquí consideramos que no existe o hubo error con la API externa.
       return res.status(400).json({
         status: 'error',
         field: 'originPostalCode',
@@ -147,7 +145,7 @@ async function quoteShipment(req, res) {
     }
 
     // ==========================================
-    // Validar CP de destino con api-codigos-postales-mx
+    // Validar CP de destino
     // ==========================================
     const destinoInfo = await lookupPostalCode(destinationPostalCode);
 
@@ -163,8 +161,6 @@ async function quoteShipment(req, res) {
 
     // ==========================================
     // Construir parámetros para la cotización DHL
-    // Si no viene cityName, usamos la ciudad o municipio
-    // devueltos por la API de CP.
     // ==========================================
 
     const finalOriginCity =
@@ -198,9 +194,6 @@ async function quoteShipment(req, res) {
     const quoteResult = await quoteForUser(user, shipmentParams);
 
     if (!quoteResult || quoteResult.status !== 'ok') {
-      // Podemos mapear tipos de error a códigos HTTP,
-      // pero de momento respondemos 400 si es error "esperado"
-      // y 500 si no trae tipo.
       const statusCode = quoteResult?.type ? 400 : 500;
 
       return res.status(statusCode).json({
@@ -213,10 +206,7 @@ async function quoteShipment(req, res) {
     }
 
     // ==========================================
-    // Respuesta final:
-    //  - Todo lo que devuelve quoteForUser (pricing + DHL)
-    //  - Más originLocation y destinationLocation con
-    //    municipio / estado / ciudad (desde API CP)
+    // Respuesta final
     // ==========================================
 
     return res.json({
