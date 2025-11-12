@@ -3,65 +3,45 @@
 /**
  * Controlador de cotización de envíos.
  *
- * - Valida datos básicos del envío
- * - Valida códigos postales (formato y existencia) con api-codigos-postales-mx
- * - Obtiene municipio/estado/ciudad para origen y destino
- * - Rellena originCityName y destinationCityName con el MUNICIPIO de cada CP
- * - Si no viene plannedShippingDate, usa la fecha de HOY (YYYY-MM-DD)
- * - Llama al servicio de pricing (quoteForUser) que integra DHL + reglas internas
- * - Devuelve:
- *    * resultado de pricing
- *    * originLocation / destinationLocation con municipio y estado
- *    * originState / destinationState (estado de origen y destino en el nivel raíz)
+ * Cambios clave:
+ * - Redondeo hacia arriba (ceil) de weight, length, width, height.
+ * - Cálculo de peso volumétrico: ceil((L * W * H) / 5000).
+ * - Peso tarifario (shipmentWeightUsed) = max(weightCeil, volumetricWeight).
+ * - plannedShippingDate por defecto = hoy (YYYY-MM-DD).
+ * - originCityName/destinationCityName = municipio del CP validado.
+ * - Agrega originState/destinationState + originLocation/destinationLocation en la respuesta.
  */
 
 const { quoteForUser } = require('../services/pricingService');
 const { lookupPostalCode } = require('../services/postalCodeService');
 
-/**
- * Devuelve una fecha en formato YYYY-MM-DD con la fecha actual del servidor.
- */
 function getTodayDateString() {
   const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
-/**
- * POST /api/pricing/quote
- *
- * Body esperado:
- * {
- *   "originPostalCode": "50110",
- *   "originCityName": "Toluca",        // OPCIONAL, SE REMPLAZA POR MUNICIPIO DEL CP
- *   "destinationPostalCode": "92800",
- *   "destinationCityName": "Tuxpan",   // OPCIONAL, SE REMPLAZA POR MUNICIPIO DEL CP
- *   "weight": 1,
- *   "length": 10,
- *   "width": 10,
- *   "height": 10,
- *   "plannedShippingDate": "2025-11-11" // OPCIONAL, SI NO VIENE SE USA HOY
- * }
- *
- * Requiere autenticación (JWT en Authorization: Bearer <token>).
- */
+function ceilNumber(n) {
+  const num = Number(n);
+  if (Number.isNaN(num)) return null;
+  return Math.ceil(num);
+}
+
 async function quoteShipment(req, res) {
   try {
+    // Requiere autenticación (ya lo protege el middleware)
     const user = req.user;
     if (!user) {
-      return res.status(401).json({
-        status: 'error',
-        message: 'No autorizado. Falta usuario autenticado.'
-      });
+      return res.status(401).json({ status: 'error', message: 'No autorizado.' });
     }
 
     const {
       originPostalCode,
-      originCityName,       // NO usamos directamente, lo sobreescribimos
       destinationPostalCode,
-      destinationCityName,  // NO usamos directamente, lo sobreescribimos
+      originCityName,        // ignorado; lo sobreescribimos
+      destinationCityName,   // ignorado; lo sobreescribimos
       weight,
       length,
       width,
@@ -69,10 +49,7 @@ async function quoteShipment(req, res) {
       plannedShippingDate
     } = req.body || {};
 
-    // =============================
-    // Validaciones básicas de input
-    // =============================
-
+    // Validaciones de presencia
     if (
       !originPostalCode ||
       !destinationPostalCode ||
@@ -83,169 +60,115 @@ async function quoteShipment(req, res) {
     ) {
       return res.status(400).json({
         status: 'error',
-        message:
-          'Debes enviar originPostalCode, destinationPostalCode, weight, length, width y height.'
+        message: 'Debes enviar originPostalCode, destinationPostalCode, weight, length, width y height.'
       });
     }
 
+    // Validación de CPs (5 dígitos)
     const cpRegex = /^[0-9]{5}$/;
-
     if (!cpRegex.test(String(originPostalCode).trim())) {
-      return res.status(400).json({
-        status: 'error',
-        field: 'originPostalCode',
-        message: 'El código postal de origen debe tener exactamente 5 dígitos numéricos.'
-      });
+      return res.status(400).json({ status: 'error', field: 'originPostalCode', message: 'CP de origen inválido (5 dígitos).' });
     }
-
     if (!cpRegex.test(String(destinationPostalCode).trim())) {
+      return res.status(400).json({ status: 'error', field: 'destinationPostalCode', message: 'CP de destino inválido (5 dígitos).' });
+    }
+
+    // Redondeo hacia arriba de dimensiones y peso (enteros)
+    const weightCeil = ceilNumber(weight);
+    const lengthCeil = ceilNumber(length);
+    const widthCeil  = ceilNumber(width);
+    const heightCeil = ceilNumber(height);
+
+    if ([weightCeil, lengthCeil, widthCeil, heightCeil].some(v => v === null || v <= 0)) {
       return res.status(400).json({
         status: 'error',
-        field: 'destinationPostalCode',
-        message: 'El código postal de destino debe tener exactamente 5 dígitos numéricos.'
+        message: 'weight, length, width y height deben ser números > 0. Se redondean al entero superior.'
       });
     }
 
-    const weightNum = Number(weight);
-    if (isNaN(weightNum) || weightNum <= 0) {
-      return res.status(400).json({
-        status: 'error',
-        field: 'weight',
-        message: 'El peso debe ser un número mayor a 0.'
-      });
-    }
-
-    const lengthNum = Number(length);
-    const widthNum = Number(width);
-    const heightNum = Number(height);
-
-    if (isNaN(lengthNum) || lengthNum <= 0) {
-      return res.status(400).json({
-        status: 'error',
-        field: 'length',
-        message: 'El largo (length) debe ser un número mayor a 0.'
-      });
-    }
-
-    if (isNaN(widthNum) || widthNum <= 0) {
-      return res.status(400).json({
-        status: 'error',
-        field: 'width',
-        message: 'El ancho (width) debe ser un número mayor a 0.'
-      });
-    }
-
-    if (isNaN(heightNum) || heightNum <= 0) {
-      return res.status(400).json({
-        status: 'error',
-        field: 'height',
-        message: 'La altura (height) debe ser un número mayor a 0.'
-      });
-    }
-
-    // ==========================================
-    // Validar CP de origen con api-codigos-postales-mx
-    // ==========================================
-    const origenInfo = await lookupPostalCode(originPostalCode);
-
+    // Validar CPs con nuestra API y extraer municipio/estado/ciudad
+    const origenInfo = await lookupPostalCode(String(originPostalCode).trim());
     if (!origenInfo.ok) {
       return res.status(400).json({
         status: 'error',
         field: 'originPostalCode',
-        message: origenInfo.message || 'No se pudo validar el código postal de origen.',
-        error_code: origenInfo.error || null,
-        cp: originPostalCode
+        message: origenInfo.message || 'No se pudo validar el CP de origen.'
       });
     }
 
-    // ==========================================
-    // Validar CP de destino con api-codigos-postales-mx
-    // ==========================================
-    const destinoInfo = await lookupPostalCode(destinationPostalCode);
-
+    const destinoInfo = await lookupPostalCode(String(destinationPostalCode).trim());
     if (!destinoInfo.ok) {
       return res.status(400).json({
         status: 'error',
         field: 'destinationPostalCode',
-        message: destinoInfo.message || 'No se pudo validar el código postal de destino.',
-        error_code: destinoInfo.error || null,
-        cp: destinationPostalCode
+        message: destinoInfo.message || 'No se pudo validar el CP de destino.'
       });
     }
 
-    // ==========================================
-    // ORIGIN / DESTINATION CITY:
-    // Usamos SIEMPRE el MUNICIPIO del CP
-    // (si no hay municipio, usamos ciudad)
-    // ==========================================
+    // Rellenar ciudades con MUNICIPIO del CP
+    const finalOriginCity       = origenInfo.municipio || origenInfo.ciudad || null;
+    const finalDestinationCity  = destinoInfo.municipio || destinoInfo.ciudad || null;
 
-    const finalOriginCity =
-      origenInfo.municipio ||
-      origenInfo.ciudad ||
-      null;
+    // plannedShippingDate por defecto = hoy
+    const finalPlannedDate = (plannedShippingDate && String(plannedShippingDate).trim() !== '')
+      ? String(plannedShippingDate).trim()
+      : getTodayDateString();
 
-    const finalDestinationCity =
-      destinoInfo.municipio ||
-      destinoInfo.ciudad ||
-      null;
+    // Peso volumétrico = ceil((L*W*H)/5000)
+    const volumetricWeight = Math.ceil((lengthCeil * widthCeil * heightCeil) / 5000);
+    // Peso tarifario (el que se usará para cotizar)
+    const shipmentWeightUsed = Math.max(weightCeil, volumetricWeight);
 
-    // ==========================================
-    // plannedShippingDate: si no viene, usar HOY
-    // ==========================================
-
-    let finalPlannedShippingDate = plannedShippingDate;
-
-    if (!finalPlannedShippingDate || String(finalPlannedShippingDate).trim() === '') {
-      finalPlannedShippingDate = getTodayDateString();
-    } else {
-      finalPlannedShippingDate = String(finalPlannedShippingDate).trim();
-    }
-
-    // ==========================================
-    // Construir parámetros para la cotización DHL
-    // ==========================================
-
+    // Parámetros para la cotización (enviamos el peso tarifario)
     const shipmentParams = {
       originPostalCode: String(originPostalCode).trim(),
       originCityName: finalOriginCity,
       destinationPostalCode: String(destinationPostalCode).trim(),
       destinationCityName: finalDestinationCity,
-      weight: weightNum,
-      length: lengthNum,
-      width: widthNum,
-      height: heightNum,
-      plannedShippingDate: finalPlannedShippingDate
+      // ¡Ojo! DHL recibe ESTE peso:
+      weight: shipmentWeightUsed,
+      // Guardamos también los redondeados para referencia interna en el servicio
+      weightRounded: weightCeil,
+      lengthRounded: lengthCeil,
+      widthRounded: widthCeil,
+      heightRounded: heightCeil,
+      volumetricWeight,
+      shipmentWeightUsed,
+      plannedShippingDate: finalPlannedDate
     };
 
-    // ==========================================
-    // Llamar al servicio de pricing (DHL + reglas internas)
-    // ==========================================
-
+    // Llamar al servicio de pricing (DHL + reglas internas + redondeo de precios)
     const quoteResult = await quoteForUser(user, shipmentParams);
 
     if (!quoteResult || quoteResult.status !== 'ok') {
       const statusCode = quoteResult?.type ? 400 : 500;
-
       return res.status(statusCode).json({
         status: 'error',
-        message:
-          quoteResult?.message || 'No se pudo calcular la cotización.',
+        message: quoteResult?.message || 'No se pudo calcular la cotización.',
         type: quoteResult?.type || 'UNKNOWN',
-        details: quoteResult
+        details: quoteResult || null
       });
     }
 
-    // ==========================================
-    // Respuesta final
-    // ==========================================
-
+    // Respuesta
     return res.json({
       ...quoteResult,
 
-      // NUEVOS CAMPOS EN EL NIVEL RAÍZ:
+      // Exponemos también estos datos de cálculo:
+      volumetricWeight,           // Peso volumétrico usado
+      shipmentWeightUsed,         // Peso por el que se tarifica (mayor entre volumétrico y físico)
+      inputRounded: {
+        weight: weightCeil,
+        length: lengthCeil,
+        width:  widthCeil,
+        height: heightCeil
+      },
+
+      // Estados en el nivel raíz (como pediste antes)
       originState: origenInfo.estado || null,
       destinationState: destinoInfo.estado || null,
 
+      // Contexto de CPs:
       originLocation: {
         cp: origenInfo.cp,
         municipio: origenInfo.municipio,
@@ -271,6 +194,4 @@ async function quoteShipment(req, res) {
   }
 }
 
-module.exports = {
-  quoteShipment
-};
+module.exports = { quoteShipment };
